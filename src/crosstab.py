@@ -15,7 +15,7 @@ import re
 import string
 import sys
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from difflib import SequenceMatcher
@@ -26,7 +26,6 @@ import tableauserverclient as tsc
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from tableauserverclient.server.endpoint.exceptions import TableauError
 
 import wizard
 from tableau import (
@@ -44,15 +43,11 @@ DEFAULT_OUT = Path('exports')
 VIZ_LOAD_TIMEOUT_MS = 180_000
 DOWNLOAD_TIMEOUT_MS = 300_000
 MAX_SEARCH_RESULTS = 30
-# REST `sheetType` of a published worksheet; dashboards are 'dashboard', stories 'story'.
-PUBLISHED_WORKSHEET = 'view'
 MIN_MATCH_SCORE = 0.75
 _WORD_RE = re.compile(r'[^\W_]+')
 # Tableau's range-filter API only accepts a Date or a number. M/D/YYYY is what the
 # dashboard shows for a date filter; YYYY-MM-DD is what the embedding call converts.
 _US_DATE = re.compile(r'^(\d{1,2})/(\d{1,2})/(\d{4})$')
-# REST exports otherwise may serve Tableau's cached data; 1 minute is the API minimum.
-REST_MAX_AGE_MIN = 1
 # A fake page on the Tableau origin: the embedded viz then loads first-party, so the SSO
 # cookies apply and "restrict embedding to these domains" site settings can't block it.
 HOST_PATH = '/__crosstab_host__'
@@ -137,7 +132,7 @@ class RangeFilter:
 
 
 @dataclass(frozen=True)
-class EmbedJob:
+class Job:
     """Crosstab of dashboard sheets through the Embedding API, like Download > Crosstab."""
 
     name: str
@@ -145,26 +140,6 @@ class EmbedJob:
     sheets: list[str]
     filters: list[ValuesFilter | RangeFilter] = field(default_factory=list)
     params: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class RestJob:
-    """Summary data of a published view through the REST API: no browser, but not the crosstab layout."""
-
-    name: str
-    view: str
-    view_id: str
-    filters: list[ValuesFilter] = field(default_factory=list)
-    params: dict[str, str] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        # REST pairs values across `vf_` keys by position instead of cross-filtering them.
-        if len(self.filters) > 1 and any(len(f.values) > 1 for f in self.filters):
-            msg = 'REST jobs with several filters take one value per filter; use an embed job to filter on several values'
-            raise JobError(msg)
-
-
-type Job = EmbedJob | RestJob
 
 
 class JobError(Exception):
@@ -188,32 +163,17 @@ def _parse_filter(
     return ValuesFilter(**raw) if 'values' in raw else RangeFilter(**raw)
 
 
-def _build_job(method: str, raw: dict[str, Any]) -> Job:
-    if method == 'rest':
-        filters = [_parse_filter(f, '') for f in raw.pop('filters', [])]
-        values_filters = [f for f in filters if isinstance(f, ValuesFilter)]
-        if len(values_filters) != len(filters):
-            msg = 'REST jobs only support `values` filters'
-            raise JobError(msg)
-        return RestJob(**raw, filters=values_filters)
-    if method != 'embed':
-        msg = f'unknown method {method!r}'
-        raise JobError(msg)
-    if not raw.get('sheets'):
-        msg = 'needs at least one sheet'
-        raise JobError(msg)
-    filters = [_parse_filter(f, raw['sheets'][0]) for f in raw.pop('filters', [])]
-    return EmbedJob(**raw, filters=filters)
-
-
 def parse_job(raw: object) -> Job:
     if not isinstance(raw, dict):
         msg = f'job {raw!r} is not a table'
         raise JobError(msg)
     raw = dict(raw)
-    method = raw.pop('method', 'embed')
+    if not raw.get('sheets'):
+        msg = f'job {raw.get("name", "?")!r}: needs at least one sheet'
+        raise JobError(msg)
     try:
-        return _build_job(method, raw)
+        filters = [_parse_filter(f, raw['sheets'][0]) for f in raw.pop('filters', [])]
+        return Job(**raw, filters=filters)
     except (TypeError, KeyError, JobError) as e:
         msg = f'job {raw.get("name", "?")!r}: {e}'
         raise JobError(msg) from e
@@ -250,7 +210,6 @@ def job_to_toml(job: Job) -> str:
     lines = [
         '[[job]]',
         f'name = {_toml(fields.pop("name"))}',
-        f'method = "{"rest" if isinstance(job, RestJob) else "embed"}"',
     ]
     lines += [f'{key} = {_toml(value)}' for key, value in fields.items() if value]
     return '\n'.join(lines) + '\n'
@@ -322,7 +281,7 @@ def open_view(context: BrowserContext, settings: Settings, view: str) -> Page:
 
 
 def export_embed(
-    context: BrowserContext, settings: Settings, job: EmbedJob, out_dir: Path
+    context: BrowserContext, settings: Settings, job: Job, out_dir: Path
 ) -> list[Path]:
     page = open_view(context, settings, job.view)
     try:
@@ -349,61 +308,29 @@ def export_embed(
         page.close()
 
 
-def rest_filter_value(values: Sequence[str]) -> str:
-    r"""`vf_` values are comma-separated; Tableau reads `\,` as a literal comma."""
-    return ','.join(v.replace(',', '\\,') for v in values)
-
-
-def export_rest(server: tsc.Server, job: RestJob, out_dir: Path) -> list[Path]:
-    view = server.views.get_by_id(job.view_id)
-    options = tsc.CSVRequestOptions(maxage=REST_MAX_AGE_MIN)
-    for f in job.filters:
-        options.vf(f.field, rest_filter_value(f.values))
-    for name, value in job.params.items():
-        options.parameter(name, value)
-    server.views.populate_csv(view, options)
-    path = output_path(out_dir, job, view.name or job.view)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b''.join(view.csv))
-    return [path]
-
-
 def run_jobs(settings: Settings, jobs: Sequence[Job], out_dir: Path) -> int:
     """Export every job, carrying on past failures. Returns the number of failed jobs."""
     failed = 0
-
-    def report(job: Job, export: Callable[[], list[Path]]) -> None:
-        nonlocal failed
-        try:
-            paths = export()
-        except (
-            JobError,
-            PlaywrightError,
-            TableauError,
-            OSError,
-            UnicodeError,
-            csv.Error,
-        ) as e:
-            failed += 1
-            print(
-                f'  ✗ {job.name}: {str(e).partition("\n")[0] or repr(e)}'
-            )  # Playwright appends the JS stack
-        else:
-            print(f'  ✓ {job.name}: {", ".join(map(str, paths))}')
-
-    rest_jobs = [j for j in jobs if isinstance(j, RestJob)]
-    embed_jobs = [j for j in jobs if isinstance(j, EmbedJob)]
-    if rest_jobs:
-        with rest_session(settings) as server:
-            for job in rest_jobs:
-                report(job, lambda job=job: export_rest(server, job, out_dir))
-    if embed_jobs:
-        with sync_playwright() as pw:
-            context = browser_session(pw, settings)
-            for job in embed_jobs:
-                report(
-                    job, lambda job=job: export_embed(context, settings, job, out_dir)
-                )
+    if not jobs:
+        return 0
+    with sync_playwright() as pw:
+        context = browser_session(pw, settings)
+        for job in jobs:
+            try:
+                paths = export_embed(context, settings, job, out_dir)
+            except (
+                JobError,
+                PlaywrightError,
+                OSError,
+                UnicodeError,
+                csv.Error,
+            ) as e:
+                failed += 1
+                print(
+                    f'  ✗ {job.name}: {str(e).partition("\n")[0] or repr(e)}'
+                )  # Playwright appends the JS stack
+            else:
+                print(f'  ✓ {job.name}: {", ".join(map(str, paths))}')
     return failed
 
 
@@ -482,7 +409,7 @@ def _prompt_pairs(prompt: str) -> list[tuple[str, str]]:
 
 def _build_embed_job(
     context: BrowserContext, settings: Settings, name: str, view: str
-) -> EmbedJob:
+) -> Job:
     page = open_view(context, settings, view)
     info: ViewInfo = page.evaluate(INSPECT_JS)
     page.close()
@@ -522,23 +449,10 @@ def _build_embed_job(
         else:
             filters.append(ValuesFilter(key, _split_values(value), sheet))
     params = dict(_prompt_pairs('Parameters as Name=value. Blank line when done.'))
-    return EmbedJob(name, view, chosen, filters, params)
+    return Job(name, view, chosen, filters, params)
 
 
-def _build_rest_job(name: str, view: str, view_id: str) -> RestJob:
-    pairs = _prompt_pairs(
-        'Filters as Field=value, | between values. Blank line when done.'
-    )
-    filters = [ValuesFilter(key, _split_values(value)) for key, value in pairs]
-    params = dict(_prompt_pairs('Parameters as Name=value. Blank line when done.'))
-    try:
-        return RestJob(name, view, view_id, filters, params)
-    except JobError as e:
-        raise SystemExit(str(e)) from e
-
-
-def add_job(settings: Settings, jobs_path: Path, out_dir: Path) -> int:
-    """Returns the number of failed exports when the user runs the new job right away."""
+def add_job(settings: Settings, jobs_path: Path) -> None:
     item = _find_view(settings)
     view = _view_path(item)
     existing = {j.name for j in load_jobs(jobs_path)}
@@ -548,25 +462,13 @@ def add_job(settings: Settings, jobs_path: Path, out_dir: Path) -> int:
         msg = f'A job named {name!r} already exists in {jobs_path}.'
         raise SystemExit(msg)
 
-    use_rest = False
-    if item.sheet_type == PUBLISHED_WORKSHEET:
-        print(
-            'This is a published worksheet:\n  [1] crosstab via browser (same as Download > Crosstab)\n  [2] summary data via REST API (no browser needed)'
-        )
-        use_rest = _choose('Which?', 2)[0] == 1
-
-    if use_rest:
-        job: Job = _build_rest_job(name, view, item.id or '')
-    else:
-        with sync_playwright() as pw:
-            job = _build_embed_job(browser_session(pw, settings), settings, name, view)
+    with sync_playwright() as pw:
+        job = _build_embed_job(browser_session(pw, settings), settings, name, view)
     text = job_to_toml(job)
     with jobs_path.open('a', encoding='utf-8') as f:
         f.write('\n' + text)
     print(f'\nSaved job {name!r} to {jobs_path}:\n\n{text}')
-    if input('Run it now? [Y/n] ').strip().lower() in {'', 'y', 'yes'}:
-        return run_jobs(settings, [job], out_dir)
-    return 0
+    print(f'Run it: uv run src/crosstab.py run {name}')
 
 
 def _settings() -> Settings:
@@ -610,7 +512,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             with sync_playwright() as pw:
                 sso_login(pw, settings)
         case 'add':
-            return 1 if add_job(settings, args.jobs, args.out) else 0
+            try:
+                add_job(settings, args.jobs)
+            except (
+                JobError,
+                PlaywrightError,
+                tomllib.TOMLDecodeError,
+                OSError,
+            ) as e:
+                raise SystemExit(str(e).partition('\n')[0] or repr(e)) from e
+            return 0
         case 'run':
             try:
                 jobs = load_jobs(args.jobs)

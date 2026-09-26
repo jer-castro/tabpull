@@ -1,6 +1,6 @@
 ---
 name: verify-tabpull
-description: Drive the tabpull CLI (src/crosstab.py add/run/login) against the real Tableau site and prove exports, filters, date ranges, REST value escaping and view search with captured evidence. Use before shipping any change to crosstab.py or tableau.py, or when a filter, date or search behavior is in question.
+description: Drive the tabpull CLI (src/crosstab.py add/run/login) against the real Tableau site and prove exports, filters, date ranges and view search with captured evidence. Use before shipping any change to crosstab.py or tableau.py, or when a filter, date or search behavior is in question.
 ---
 
 # Verify tabpull
@@ -35,9 +35,7 @@ It prints `settings`, `jobs.toml` and `session` lines and exits 0 only when all 
 Known-good fixtures on the current test site (`10ax.online.tableau.com`, site `jercastro`), checked live on 2026-09-26:
 
 - `CrosstabMe/Dashboard1`: a dashboard with sheets `A Title Sheet` (no filters) and `B Real Sheet`. `B Real Sheet` has categorical `Measure Names`, range `Order Date` 1/3/2023..12/30/2026, and categorical `Ship Mode`. The dashboard has parameters `Top Customers` and `Profit Bin Size`, and neither changes `B Real Sheet`.
-- `Superstore/OrderDetails`: a dashboard, view id `011b479c-65d3-43ca-a855-8ae63ffac15e`. Its REST export has `Customer Name, Measure Names, Order Date, Order ID, Ship Date, Ship Mode, Measure Values`, not `Product Name`.
-- `WorldIndicators/Population`: a published worksheet, view id `7355995d-1ae5-4fa4-a677-7713d2fb9f76`. `Country/Region` has values with commas, which makes it the REST comma fixture.
-- `Superstore/Performance`: a published worksheet (REST `sheetType` `view`), so `add` offers REST for it.
+- `Superstore/Performance`: a published worksheet, exported via the browser like any other view.
 
 ## Evidence
 
@@ -55,6 +53,5 @@ There's nothing to stop: each CLI and `verify.py` call closes its own browser. R
 ## Isolation and gotchas
 
 - Parallel browser drives are safe: each one opens its own context from `.auth/tableau-state.json` read-only.
-- Don't run REST drives in parallel. That includes `add`, which signs in with the PAT to list views. Signing in with the PAT ends any other session on the same PAT, and that includes the user's own scripts.
-- REST exports use `maxAge=1`, so Tableau may serve data up to a minute old.
+- Don't run `add` drives in parallel. `add` signs in with the PAT to list views. Signing in with the PAT ends any other session on the same PAT, and that includes the user's own scripts.
 - `login` and `src/wizard.py` need a human (a visible browser, and `getpass` for the secret). Report them as unverified rather than faking a tty.

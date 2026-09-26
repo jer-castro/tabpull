@@ -1,6 +1,6 @@
 # Add a job
 
-`add` finds a view from a pasted URL or a loosely typed name, lets the user pick sheets, filters and parameters, appends the job to the jobs file, and offers to run it.
+`add` finds a view from a pasted URL or a loosely typed name, lets the user pick sheets, filters and parameters, appends the job to the jobs file, and prints `Run it: uv run src/crosstab.py run <name>`. It never exports.
 
 ## Sub-features
 
@@ -21,14 +21,13 @@ Preconditions:
 - Doctor is `ok`.
 - `$E/add/` exists and has no `jobs.toml` yet.
 
-- **Fuzzy name.** Run `printf 'crostab dashbord\n1\nverify-add\n2\nShip Mode=First Class\n\n\nn\n' | uv run src/crosstab.py --jobs $E/add/jobs.toml add 2>&1 | tee $E/add/add.log`. The log should list `[1] Dashboard 1  (dashboard, CrosstabMe/sheets/Dashboard1)`, list both sheets, print the three `filter` lines for `B Real Sheet`, and print `Saved job 'verify-add' to $E/add/jobs.toml:` before `Run it now? [Y/n]`. `$E/add/jobs.toml` should contain `filters = [{ "field" = "Ship Mode", "values" = ["First Class"], "sheet" = "B Real Sheet" }]`.
+- **Fuzzy name.** Run `printf 'crostab dashbord\n1\nverify-add\n2\nShip Mode=First Class\n\n\n' | uv run src/crosstab.py --jobs $E/add/jobs.toml --out $E/add/exports add 2>&1 | tee $E/add/add.log`. The log should list `[1] Dashboard 1  (dashboard, CrosstabMe/sheets/Dashboard1)`, list both sheets, print the three `filter` lines for `B Real Sheet`, and end with `Saved job 'verify-add' to $E/add/jobs.toml:` followed by `Run it: uv run src/crosstab.py run verify-add`. `$E/add/jobs.toml` should contain `filters = [{ "field" = "Ship Mode", "values" = ["First Class"], "sheet" = "B Real Sheet" }]`.
+- **No export.** That drive passes `--out $E/add/exports`. After it, `$E/add/exports` must not exist. `add` never exports.
 - **URL.** Repeat with `https://10ax.online.tableau.com/#/site/jercastro/views/CrosstabMe/Dashboard1` as the first answer and a new job name. It should list exactly one view, and `Which view?` still needs the `1`.
 - **No match.** Pipe `zzqx\n`. It should exit with `No views you can access match 'zzqx'.`
-- **REST choice.** Run `printf 'superstore performance\n1\nverify-rest\n2\n\n\ny\n' | uv run src/crosstab.py --jobs $E/add-rest/jobs.toml --out $E/add-rest/exports add 2>&1 | tee $E/add-rest/add.log`. The log should show `This is a published worksheet`, save a job with `method = "rest"`, print `✓ verify-rest`, and the command should exit 0 (in zsh read `${pipestatus[2]}`, in bash `${PIPESTATUS[1]}`). The CSV had 429 lines on 2026-09-26.
 - **Duplicate name.** Rerun the fuzzy drive against the same jobs file with `verify-add` as the name. It should exit with `A job named 'verify-add' already exists in $E/add/jobs.toml.`, and the file should still hold one job.
 
 ## Gotchas
 
-- The prompt order changes if the view is a published worksheet, which adds a REST/browser choice after the job name. The listing only carries `sheetType` because `_find_view` asks for it (`fields=_default_,sheetType`), and a published worksheet reports `view`, not `worksheet`. If that choice stops appearing for `Superstore/Performance`, check those two things first. A dashboard reports `dashboard`, so if `Dashboard 1` ever lists as `view` the fuzzy recipe's answers shift by one prompt.
-- For a dashboard, the answer after the job name picks sheets by number in the printed order, which is not alphabetical. A REST job has no sheet picker.
+- The answer after the job name picks sheets by number in the printed order, which is not alphabetical. A published worksheet goes straight to that sheet picker, the same as a dashboard.
 - `add` asks for the URL or name first, then downloads the full view list. On a very large site the wait comes before the match list.

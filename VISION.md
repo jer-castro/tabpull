@@ -1,5 +1,6 @@
 # Vision
 
+This document describes the target state, not current behavior, and the gaps are the roadmap.
 tabpull exists so that a person can export a Tableau dashboard sheet as a crosstab CSV, including a hidden sheet, with the filters they would have set by hand.
 It serves someone who is allowed to crosstab a view and may not be allowed to download the workbook.
 It turns a jobs file and a Tableau session into one UTF-8 CSV per named sheet.

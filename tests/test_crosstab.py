@@ -4,16 +4,14 @@ import pytest
 
 import crosstab
 from crosstab import (
-    EmbedJob,
+    Job,
     JobError,
     RangeFilter,
-    RestJob,
     ValuesFilter,
     job_to_toml,
     match_score,
     normalize_csv,
     parse_job,
-    rest_filter_value,
 )
 from tableau import parse_tableau_url
 
@@ -64,28 +62,18 @@ def test_parse_tableau_url(url: str, server: str, site: str, view: str | None) -
 
 
 def test_jobs_round_trip_through_toml() -> None:
-    jobs = [
-        EmbedJob(
-            'west "q1"',
-            'Sales/Overview',
-            ['Detail Table', 'Totals'],
-            [
-                ValuesFilter('Region', ['West', 'East'], 'Totals'),
-                RangeFilter('Order Date', 'Detail Table', '2026-01-01', None),
-            ],
-            {'Top N': '10'},
-        ),
-        RestJob(
-            'published', 'Sales/Detail', 'abc-123', [ValuesFilter('Region', ['West'])]
-        ),
-    ]
-    text = '\n'.join(job_to_toml(job) for job in jobs)
+    job = Job(
+        'west "q1"',
+        'Sales/Overview',
+        ['Detail Table', 'Totals'],
+        [
+            ValuesFilter('Region', ['West', 'East'], 'Totals'),
+            RangeFilter('Order Date', 'Detail Table', '2026-01-01', None),
+        ],
+        {'Top N': '10'},
+    )
 
-    assert [parse_job(raw) for raw in tomllib.loads(text)['job']] == jobs
-
-
-def test_rest_filter_value_escapes_commas_inside_values() -> None:
-    assert rest_filter_value(['Smith, Jane', 'West']) == 'Smith\\, Jane,West'
+    assert [parse_job(raw) for raw in tomllib.loads(job_to_toml(job))['job']] == [job]
 
 
 @pytest.mark.parametrize(
@@ -120,25 +108,8 @@ def test_embed_filters_default_to_first_sheet() -> None:
 @pytest.mark.parametrize(
     'raw',
     [
-        {
-            'name': 'j',
-            'method': 'rest',
-            'view': 'W/V',
-            'view_id': 'x',
-            'filters': [{'field': 'Date', 'min': '2026-01-01'}],
-        },
-        {
-            'name': 'j',
-            'method': 'rest',
-            'view': 'W/V',
-            'view_id': 'x',
-            'filters': [
-                {'field': 'Region', 'values': ['West', 'East']},
-                {'field': 'Year', 'values': ['2024']},
-            ],
-        },
+        {'name': 'j', 'method': 'rest', 'view': 'W/V', 'sheets': ['A']},
         {'name': 'j', 'view': 'W/V', 'sheets': []},
-        {'name': 'j', 'method': 'ftp', 'view': 'W/V'},
         {'name': 'j', 'view': 'W/V', 'sheets': ['A'], 'typo': 1},
     ],
 )

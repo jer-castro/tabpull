@@ -1,6 +1,6 @@
 # Embed export
 
-`run` opens each `method = "embed"` job's dashboard in a headless browser, sets its parameters and filters, and writes one UTF-8 CSV per listed sheet to `exports/<job>/<sheet>.csv` (both names slugged, so `B Real Sheet` becomes `B_Real_Sheet.csv`), the same content as Download > Crosstab > CSV.
+`run` opens each job's view in a headless browser, sets its parameters and filters, and writes one UTF-8 CSV per listed sheet to `exports/<job>/<sheet>.csv` (both names slugged, so `B Real Sheet` becomes `B_Real_Sheet.csv`), the same content as Download > Crosstab > CSV.
 
 ## Sub-features
 
@@ -14,7 +14,6 @@
 
 - `uv run src/crosstab.py run` exports every job in the jobs file.
 - `uv run src/crosstab.py run <name> ...` exports only the named jobs.
-- Answering `y` or Enter to `Run it now? [Y/n]` at the end of `add`.
 
 ## Driving it with the CLI
 

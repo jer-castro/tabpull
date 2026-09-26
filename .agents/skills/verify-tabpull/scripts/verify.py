@@ -19,7 +19,7 @@ from playwright.sync_api import Browser, BrowserContext, sync_playwright
 from crosstab import (
     APPLY_JS,
     INSPECT_JS,
-    EmbedJob,
+    Job,
     JobError,
     RangeFilter,
     export_embed,
@@ -106,7 +106,7 @@ def date_filter(args: argparse.Namespace) -> int:
     settings = load_settings()
     range_filter = RangeFilter(args.field, args.sheet, args.min, args.max)
     sent = filter_payload(range_filter)
-    job = EmbedJob('date-filter', args.view, [args.sheet], [range_filter])
+    job = Job('date-filter', args.view, [args.sheet], [range_filter])
     results: list[dict[str, Any]] = []
     with sync_playwright() as pw:
         browser = launch_browser(pw, headless=True)

@@ -13,7 +13,7 @@ This directory is the maintained source for verifying what a user of `src/crosst
 
 - CLI drives are literal commands. Prompts are answered by piped stdin, in prompt order.
 - Pick sheet and field names from `verify.py inspect Workbook/View` output, not from memory.
-- Run REST drives one at a time, because a PAT sign-in ends other sessions on that PAT.
+- Run `add` drives one at a time, because a PAT sign-in ends other sessions.
 
 ## Proof and skip reporting
 
@@ -29,6 +29,5 @@ Each feature file has an H1 and one paragraph, then exactly these H2s in order: 
 ## Features
 
 - [Embed export](./run-embed.md) covers dashboard sheet crosstabs, hidden sheets, values filters, date ranges and parameters.
-- [REST export](./run-rest.md) covers published views over REST, values filters, and commas inside values.
 - [Add a job](./add.md) covers view search by URL or fuzzy name, picking sheets and filters, and saving the job.
 - [SSO session](./login.md) covers session reuse, the expired-session paths, and `login`.

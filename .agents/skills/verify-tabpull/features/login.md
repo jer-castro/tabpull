@@ -27,7 +27,6 @@ Preconditions:
 - **Reuse.** With doctor `ok`, any embed drive from [run-embed.md](./run-embed.md) proves it: the log has `✓` lines and no sign-in window prompt.
 - **Missing session, no tty.** `mkdir -p $E/login/nosession && cp .env $E/login/nosession/` and write an embed job for `CrosstabMe/Dashboard1` / `B Real Sheet` to `$E/login/nosession/jobs.toml`. From that directory run `uv run --project <repo root> <repo root>/src/crosstab.py run </dev/null 2>&1 | tee run.log`. It should exit 1 with the `Run: uv run src/crosstab.py login` message, open no window, and write no CSV.
 - **Expired session, no tty.** Same directory, plus `mkdir .auth && echo '{"cookies":[],"origins":[]}' > .auth/tableau-state.json`. The run should end with the same message. That proves a state file without a live `XSRF-TOKEN` is treated as expired rather than used.
-- **REST without a session.** In the no-session directory, a jobs file with only a REST job (see [run-rest.md](./run-rest.md)) should still export and exit 0, because REST jobs never start the browser.
 - **Missing settings, no tty.** Run from an empty scratch directory with no `.env` and none of the `TABLEAU_*` variables exported: `run </dev/null` should exit with `Missing TABLEAU_SERVER_URL, TABLEAU_SITE, TABLEAU_PAT_NAME, TABLEAU_PAT_SECRET in .env. Run: uv run src/wizard.py`.
 - **`login`, tty paths, timeout.** Human only. Report them as unverified and ask the user to run `uv run src/crosstab.py login`. Proof afterwards is doctor's `session ok` line with mode `600`.
 

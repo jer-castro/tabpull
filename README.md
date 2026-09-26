@@ -4,7 +4,7 @@ Exports crosstab CSVs from Tableau dashboards from the command line. It does wha
 
 ## Why not just the REST API
 
-The REST crosstab/data endpoints only export the first sheet when the view is a dashboard, and hidden (dashboard-only) sheets have no REST view at all. So dashboard sheets go through the Tableau Embedding API (`exportCrosstabAsync`) in a headless browser signed in with your SSO session. The PAT is still used to find views, and to pull published worksheets over REST when you don't need the crosstab layout.
+The REST crosstab/data endpoints only export the first sheet when the view is a dashboard, and hidden (dashboard-only) sheets have no REST view at all. So dashboard sheets go through the Tableau Embedding API (`exportCrosstabAsync`) in a headless browser signed in with your SSO session. The PAT is still used to find views.
 
 ## Install
 
@@ -33,7 +33,7 @@ uv run src/crosstab.py run daily-west # only some jobs
 uv run src/crosstab.py login          # refresh the SSO session
 ```
 
-`run` keeps going when one job fails and exits non-zero if any did. When the SSO session has expired it opens the sign-in window if you're at a terminal, and otherwise exits and asks you to run `login`. Crosstab CSVs are rewritten from Tableau's UTF-16 tab-separated format to plain UTF-8 CSV.
+`add` saves the job and prints the `run` command to export it. `run` keeps going when one job fails and exits non-zero if any did. When the SSO session has expired it opens the sign-in window if you're at a terminal, and otherwise exits and asks you to run `login`. Crosstab CSVs are rewritten from Tableau's UTF-16 tab-separated format to plain UTF-8 CSV.
 
 ## Jobs file
 
@@ -42,7 +42,6 @@ uv run src/crosstab.py login          # refresh the SSO session
 ```toml
 [[job]]
 name = "daily-west"
-method = "embed"                       # crosstab through the browser (default)
 view = "SalesWorkbook/Overview"        # Workbook/View from the URL
 sheets = ["Order Detail", "Totals"]    # any worksheet in the dashboard, hidden ones included
 filters = [
@@ -50,16 +49,9 @@ filters = [
   { field = "Order Date", min = "2026-09-01", max = "2026-09-25", sheet = "Totals" },
 ]
 params = { "Top N" = "25" }
-
-[[job]]
-name = "published-detail"
-method = "rest"                        # summary data over REST, no browser; published worksheets only
-view = "SalesWorkbook/Detail"
-view_id = "0f6a..."                    # set by `add`
-filters = [{ field = "Region", values = ["West"] }]
 ```
 
-Parameters are set first, then filters, in the same order you'd set them in the dashboard. A filter applies on `sheet` (default: the first entry in `sheets`) and reaches other sheets the same way it does in the UI. Dates written as `YYYY-MM-DD` or `M/D/YYYY`, and plain numbers, are converted for range filters. REST jobs only support `values` filters, and a REST job with more than one filter takes one value per filter, because Tableau pairs REST filter values by position instead of combining them.
+Parameters are set first, then filters, in the same order you'd set them in the dashboard. A filter applies on `sheet` (default: the first entry in `sheets`) and reaches other sheets the same way it does in the UI. Dates written as `YYYY-MM-DD` or `M/D/YYYY`, and plain numbers, are converted for range filters.
 
 Not covered: stories, relative-date filters, and dates computed at run time. Use a parameter or edit the job for those.
 
