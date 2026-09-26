@@ -6,7 +6,7 @@
 
 - `embed-sheet` exports a named sheet, including hidden ones and ones that aren't first alphabetically.
 - `embed-values` applies a categorical `values` filter on its `sheet`.
-- `embed-range-date` applies a `YYYY-MM-DD` or `M/D/YYYY` `min`/`max` range as the same calendar days in any browser timezone, and rejects an impossible `M/D/YYYY` date like `2/30/2024`.
+- `embed-range-date` applies a `YYYY-MM-DD` or `M/D/YYYY` `min`/`max` range as the same calendar days in any browser timezone, and rejects an impossible date such as `2/30/2024` or `2024-02-31`. A relative or run-time bound is refused.
 - `embed-params` sets parameters before filters.
 - `embed-failure` reports `✗ <job>: <reason>` for a broken job, keeps going, and exits 1.
 - `embed-default-sheet` prints a note when a filter omits `sheet`, applies that filter on the first sheet in the job, and does not copy it onto the other sheets.
@@ -29,7 +29,7 @@ Preconditions:
 - **Date range across timezones.** Run `uv run python .agents/skills/verify-tabpull/scripts/verify.py --site <site> date-filter CrosstabMe/Dashboard1 --sheet "B Real Sheet" --field "Order Date" --min 2024-01-01 --max 2024-01-31 --out $E/date`. You should see `PASS`, a `min`/`max` `value` of `2024-01-01T00:00:00.000Z`/`2024-01-31T00:00:00.000Z` in all three timezone lines, the same `sha=` prefix on all three, and `evidence: $E/date/date-filter.json` (full hashes are in the JSON). `--site` may be omitted when only one site is configured.
 - **M/D/YYYY bounds.** Rerun with `--min 1/1/2024 --max 1/31/2024 --out $E/date-us`. It should `PASS` with the same applied days and the same sha256 as the `YYYY-MM-DD` run.
 - **Date control.** Rerun with `--max 2024-01-15 --out $E/date-control`. It should `PASS` again with a sha256 that differs from the first run.
-- **Impossible date.** Add a job with `{ field = "Order Date", min = "2/30/2024", max = "3/1/2024" }` and run it. The jobs file loads fine; the export fails with `✗ <job>: '2/30/2024' is not a real date; use YYYY-MM-DD or M/D/YYYY`, and the run exits 1. Only `M/D/YYYY` bounds are calendar-checked; a bad `YYYY-MM-DD` goes to Tableau as is.
+- **Impossible date.** Add a job with `{ field = "Order Date", min = "2/30/2024", max = "3/1/2024" }` and run it. The jobs file loads fine; the export fails with `✗ <job>: '2/30/2024' is not a real date; use YYYY-MM-DD or M/D/YYYY`, and the run exits 1. A bad `YYYY-MM-DD` such as `2024-02-31` fails the same way, before the view opens. A relative bound such as `yesterday` fails with `is a relative date or a date computed at run time`.
 - **Named job.** Run `run <second job name>` against the same jobs file. The log should show `Exporting 1 job(s)`.
 - **Failure path.** Add a job with `sheets = ["No Such Sheet"]` and run it. You should get `✗ <job>: Page.evaluate: r: invalid-selection-sheet: sheetName parameter must belong to a worksheet within the current view`, the other jobs should still get `✓`, and the run should exit 1.
 - **Parameters.** Add a job with `params = { "No Such Param" = "1" }`. It must fail with `✗ <job>: Page.evaluate: r: invalid-parameter: Invalid parameter:  No Such Param`, which proves `params` reach the view before any filter. A job with `params = { "Top Customers" = "1" }` should get `✓`.
@@ -39,5 +39,5 @@ Preconditions:
 - Proven on 2026-09-26: Tableau reads range-filter dates as UTC days, so `2024-01-01` stays 1/1/2024 in Los Angeles and Auckland. Rerun the date recipe whenever `APPLY_JS` or the Embedding API version changes.
 - Moving the start by one day may leave the CSV unchanged if that day has no rows (1/1/2024 has none on the test site). Use a range change that must drop rows as the control.
 - The first view load can take tens of seconds. `VIZ_LOAD_TIMEOUT_MS` is 180 s, so wait for the process to exit instead of sleeping for a fixed time.
-- Stories and relative-date filters are unsupported by design. Interactive `add`, flag `add`, `run`, and `verify.py inspect` reject a story view with `Stories are not supported; use the dashboard inside it.` The supported target is the dashboard inside the story.
+- Interactive `add`, flag `add`, `run`, and `verify.py inspect` reject a story view with `Stories are not supported; use the dashboard inside it.` The supported target is the dashboard inside the story. Relative dates and dates computed at run time are refused on range bounds; use a parameter or an absolute `YYYY-MM-DD` or `M/D/YYYY` date.
 - `Dashboard1` has parameters `Top Customers` (5) and `Profit Bin Size` (200), but neither changes `B Real Sheet`: on 2026-09-26 both param jobs had the same sha256 as the unfiltered export. That's why the parameter recipe proves the path with an unknown name. For a value-effect proof, find a view whose sheet actually uses a parameter.

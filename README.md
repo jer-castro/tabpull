@@ -93,7 +93,7 @@ params = { "Top N" = "25" }
 
 Parameters are set first, then filters, in the same order you'd set them in the dashboard. A filter applies on `sheet`. When `sheet` is omitted, tabpull applies that filter on the first entry in `sheets` and prints a line saying so. It does not copy the filter onto every sheet. Other sheets change only the way that same filter changes them in the dashboard. Dates written as `YYYY-MM-DD` or `M/D/YYYY`, and plain numbers, are converted for range filters.
 
-Not covered: stories, relative-date filters, and dates computed at run time. Use a parameter or edit the job for those.
+An impossible date such as `2024-02-31` or `2/31/2024` is rejected. A relative date (`yesterday`, `last week`, `today`, `7 days ago`) or a date computed at run time is refused. Use a parameter, or write an absolute `YYYY-MM-DD` or `M/D/YYYY` date. Stories are refused; use the dashboard inside the story.
 
 ## Develop
 
