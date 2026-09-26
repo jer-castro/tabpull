@@ -295,6 +295,141 @@ def test_add_flags_imply_the_only_site_and_default_jobs_file(
     assert not (tmp_path / 'jobs.toml').exists()
 
 
+def test_prompted_add_puts_a_sheetless_filter_on_the_first_sheet(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    answers = iter(
+        [
+            '2,1',
+            'Region=West',
+            'Order Date=1/3/2024..2/1/2024',
+            'Ship Mode=First Class',
+            '',
+            '',
+        ]
+    )
+
+    def fake_input(prompt: str = '') -> str:
+        try:
+            return next(answers)
+        except StopIteration as e:
+            raise AssertionError(prompt) from e
+
+    class Page:
+        def evaluate(self, script: str, arg: object = None) -> dict[str, object]:
+            assert script == crosstab.INSPECT_JS
+            return {
+                'sheets': [
+                    {
+                        'name': 'A Title Sheet',
+                        'filters': [
+                            {
+                                'field': 'Region',
+                                'type': 'categorical',
+                                'current': 'West',
+                            },
+                            {
+                                'field': 'Order Date',
+                                'type': 'range',
+                                'current': '1/3/2023 .. 12/30/2026',
+                            },
+                        ],
+                    },
+                    {
+                        'name': 'B Real Sheet',
+                        'filters': [
+                            {
+                                'field': 'Ship Mode',
+                                'type': 'categorical',
+                                'current': '(All)',
+                            },
+                        ],
+                    },
+                ],
+                'params': [],
+            }
+
+        def close(self) -> None:
+            return None
+
+    class Item:
+        name = 'Dashboard 1'
+        content_url = 'CrosstabMe/sheets/Dashboard1'
+
+    monkeypatch.setattr('builtins.input', fake_input)
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr(crosstab, 'open_view', lambda *_a, **_k: Page())
+    monkeypatch.setattr(crosstab, '_find_view', lambda _settings: Item())
+
+    crosstab.add_job(_settings('demo', tmp_path), jobs, name='prompted')
+    job = crosstab.load_jobs(jobs)[0]
+    notes = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if 'names no sheet' in line
+    ]
+
+    assert job.sheets == ['B Real Sheet', 'A Title Sheet']
+    assert job.filters == [
+        crosstab.ValuesFilter('Region', ['West'], 'B Real Sheet'),
+        crosstab.RangeFilter('Order Date', 'B Real Sheet', '1/3/2024', '2/1/2024'),
+        crosstab.ValuesFilter('Ship Mode', ['First Class'], 'B Real Sheet'),
+    ]
+    note = (
+        '  prompted: filter {field!r} names no sheet; '
+        "applying it on 'B Real Sheet', the first sheet in the job."
+    )
+    assert notes == [
+        note.format(field='Region'),
+        note.format(field='Order Date'),
+        note.format(field='Ship Mode'),
+    ]
+
+
+def test_prompted_add_refuses_a_relative_range_before_saving(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    answers = iter(['1', 'Order Date=yesterday..today', '', ''])
+
+    class Page:
+        def evaluate(self, script: str, arg: object = None) -> dict[str, object]:
+            return {
+                'sheets': [
+                    {
+                        'name': 'A Title Sheet',
+                        'filters': [
+                            {
+                                'field': 'Order Date',
+                                'type': 'range',
+                                'current': '',
+                            },
+                        ],
+                    }
+                ],
+                'params': [],
+            }
+
+        def close(self) -> None:
+            return None
+
+    class Item:
+        name = 'Dashboard 1'
+        content_url = 'CrosstabMe/sheets/Dashboard1'
+
+    monkeypatch.setattr('builtins.input', lambda prompt='': next(answers))
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr(crosstab, 'open_view', lambda *_a, **_k: Page())
+    monkeypatch.setattr(crosstab, '_find_view', lambda _settings: Item())
+
+    with pytest.raises(JobError, match='relative date'):
+        crosstab.add_job(_settings('demo', tmp_path), jobs, name='prompted')
+    assert not jobs.exists()
+
+
 def test_add_without_flags_still_prompts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

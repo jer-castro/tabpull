@@ -51,7 +51,10 @@ MIN_MATCH_SCORE = 0.75
 _WORD_RE = re.compile(r'[^\W_]+')
 # Tableau's range-filter API only accepts a Date or a number. M/D/YYYY is what the
 # dashboard shows for a date filter; YYYY-MM-DD is what the embedding call converts.
+# Anything else on a range bound is a relative date or a date computed at run time.
 _US_DATE = re.compile(r'^(\d{1,2})/(\d{1,2})/(\d{4})$')
+_ISO_DATE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})$')
+_NUMBER = re.compile(r'^-?\d+(\.\d+)?$')
 # A fake page on the Tableau origin: the embedded viz then loads first-party, so the SSO
 # cookies apply and "restrict embedding to these domains" site settings can't block it.
 HOST_PATH = '/__crosstab_host__'
@@ -79,13 +82,19 @@ try {
 </script>
 """)
 
-STORY_JS = """() => {
-  if (window.viz.workbook.activeSheet.sheetType === 'story') throw new Error('Stories are not supported; use the dashboard inside it.');
-}"""
+STORY_REFUSAL = 'Stories are not supported; use the dashboard inside it.'
+_STORY_GUARD_JS = (
+    "if (window.viz.workbook.activeSheet.sheetType === 'story') "
+    'throw new Error(' + json.dumps(STORY_REFUSAL) + ');'
+)
 
-INSPECT_JS = """async () => {
+STORY_JS = '() => {\n  ' + _STORY_GUARD_JS + '\n}'
+
+INSPECT_JS = (
+    'async () => {\n  '
+    + _STORY_GUARD_JS
+    + """
   const active = window.viz.workbook.activeSheet;
-  if (active.sheetType === 'story') throw new Error('Stories are not supported; use the dashboard inside it.');
   const worksheets = active.sheetType === 'worksheet' ? [active] : active.worksheets;
   const current = (f) => {
     if (f.filterType === 'categorical') return f.isAllSelected ? '(All)' : f.appliedValues.map((v) => v.formattedValue).join(' | ');
@@ -100,6 +109,7 @@ INSPECT_JS = """async () => {
   const params = await window.viz.workbook.getParametersAsync();
   return { sheets, params: params.map((p) => ({ name: p.name, current: p.currentValue.formattedValue })) };
 }"""
+)
 
 APPLY_JS = """async ({ filters, params }) => {
   const viz = window.viz;
@@ -107,10 +117,25 @@ APPLY_JS = """async ({ filters, params }) => {
   const worksheets = active.sheetType === 'worksheet' ? [active] : active.worksheets;
   const toValue = (v) => {
     if (typeof v !== 'string') return v;
+    if (v.trim() === '') return v;
     // Tableau reads range-filter Dates as UTC calendar days, whatever the browser timezone.
-    if (/^\\d{4}-\\d{2}-\\d{2}$/.test(v)) return new Date(v + 'T00:00:00Z');
+    // An impossible ISO date must not be returned: `new Date` shifts it (2024-02-31 -> March 2).
+    const iso = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(v);
+    if (iso) {
+      const year = Number(iso[1]);
+      const month = Number(iso[2]);
+      const day = Number(iso[3]);
+      const parsed = new Date(v + 'T00:00:00Z');
+      if (
+        Number.isNaN(parsed.getTime()) ||
+        parsed.getUTCFullYear() !== year ||
+        parsed.getUTCMonth() !== month - 1 ||
+        parsed.getUTCDate() !== day
+      ) throw new Error(v + ' is not a real date; use YYYY-MM-DD or M/D/YYYY');
+      return parsed;
+    }
     if (/^-?\\d+(\\.\\d+)?$/.test(v)) return Number(v);
-    return v;
+    throw new Error(v + ' is a relative date or a date computed at run time; use YYYY-MM-DD or M/D/YYYY');
   };
   for (const [name, value] of Object.entries(params)) await viz.workbook.changeParameterValueAsync(name, value);
   for (const f of filters) {
@@ -259,19 +284,46 @@ def resolved_filters(job: Job) -> list[ValuesFilter | RangeFilter]:
     return resolved
 
 
+def _calendar_day(year: int, month: int, day: int, original: str) -> date:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        msg = f'{original!r} is not a real date; use YYYY-MM-DD or M/D/YYYY'
+        raise JobError(msg) from None
+
+
 def normalize_range_bound(value: str | None) -> str | None:
-    """Turn an `M/D/YYYY` range bound into `YYYY-MM-DD`. Other values pass through."""
+    """Turn an `M/D/YYYY` range bound into `YYYY-MM-DD`.
+
+    A blank stays blank and a number passes through. An impossible calendar day
+    is rejected. Any other text is a relative date or a date computed at run time.
+    """
     if value is None:
         return None
-    match = _US_DATE.fullmatch(value.strip())
-    if match is None:
+    text = value.strip()
+    if not text:
         return value
-    month, day, year = (int(part) for part in match.groups())
-    try:
-        return date(year, month, day).isoformat()
-    except ValueError:
-        msg = f'{value!r} is not a real date; use YYYY-MM-DD or M/D/YYYY'
-        raise JobError(msg) from None
+    if _NUMBER.fullmatch(text):
+        return text
+    us = _US_DATE.fullmatch(text)
+    if us is not None:
+        month, day, year = (int(part) for part in us.groups())
+        return _calendar_day(year, month, day, value).isoformat()
+    iso = _ISO_DATE.fullmatch(text)
+    if iso is not None:
+        year, month, day = (int(part) for part in iso.groups())
+        return _calendar_day(year, month, day, value).isoformat()
+    msg = (
+        f'{value!r} is a relative date or a date computed at run time; '
+        'use YYYY-MM-DD or M/D/YYYY'
+    )
+    raise JobError(msg)
+
+
+def _accept_range_bound(value: str | None) -> str | None:
+    """Keep the bound the user typed when it is safe to apply later."""
+    normalize_range_bound(value)
+    return value
 
 
 def filter_payload(item: ValuesFilter | RangeFilter) -> dict[str, Any]:
@@ -306,9 +358,9 @@ def _refuse_story(page: Page) -> None:
     try:
         page.evaluate(STORY_JS)
     except PlaywrightError as e:
-        if 'Stories are not supported' not in str(e):
+        if STORY_REFUSAL not in str(e):
             raise
-        msg = 'Stories are not supported; use the dashboard inside it.'
+        msg = STORY_REFUSAL
         raise JobError(msg) from e
 
 
@@ -344,12 +396,14 @@ def export_embed(
     context: BrowserContext, settings: Settings, job: Job, out_dir: Path
 ) -> list[Path]:
     filters = resolved_filters(job)
+    # Reject a bad bound before the view opens, so it never reaches Tableau.
+    payloads = [filter_payload(item) for item in filters]
     page = open_view(context, settings, job.view)
     try:
         page.evaluate(
             APPLY_JS,
             {
-                'filters': [filter_payload(item) for item in filters],
+                'filters': payloads,
                 'params': job.params,
             },
         )
@@ -511,10 +565,10 @@ def _build_embed_job(
         for i in _choose('Which sheet(s) to crosstab? (e.g. 2 or 2,3)', len(sheets))
     ]
 
-    by_field: dict[str, tuple[str, str]] = {}
+    kind_by_field: dict[str, str] = {}
     for sheet in sorted(sheets, key=lambda s: s['name'] not in chosen):
         for item in sheet['filters']:
-            by_field.setdefault(item['field'], (sheet['name'], item['type']))
+            kind_by_field.setdefault(item['field'], item['type'])
             print(
                 f'  filter  {item["field"]} ({item["type"]}) on {sheet["name"]!r}: {item["current"]}'
             )
@@ -525,20 +579,23 @@ def _build_embed_job(
     for key, value in _prompt_pairs(
         'Filters as Field=value, | between values, min..max for ranges. Blank line when done.'
     ):
-        sheet, kind = by_field.get(key, (chosen[0], 'categorical'))
-        if key not in by_field:
-            print(
-                f'  {key!r} names no sheet; applying it on {sheet!r}, the first sheet in the job.'
-            )
-        if kind == 'range':
+        # A prompted filter cannot name a sheet. resolved_filters puts it on
+        # the first sheet in the job and prints the same note as flag add.
+        if kind_by_field.get(key, 'categorical') == 'range':
             low, _, high = value.partition('..')
             filters.append(
-                RangeFilter(key, sheet, low.strip() or None, high.strip() or None)
+                RangeFilter(
+                    key,
+                    '',
+                    _accept_range_bound(low.strip() or None),
+                    _accept_range_bound(high.strip() or None),
+                )
             )
         else:
-            filters.append(ValuesFilter(key, _split_values(value), sheet))
+            filters.append(ValuesFilter(key, _split_values(value), ''))
     params = dict(_prompt_pairs('Parameters as Name=value. Blank line when done.'))
-    return Job(name, view, chosen, settings.name, filters, params)
+    job = Job(name, view, chosen, settings.name, filters, params)
+    return replace(job, filters=resolved_filters(job))
 
 
 def _using_site(settings: Settings) -> None:
@@ -591,7 +648,12 @@ def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
         raise JobError(msg)
     if '..' in value:
         low, _, high = value.partition('..')
-        return RangeFilter(field_name, sheet, low.strip() or None, high.strip() or None)
+        return RangeFilter(
+            field_name,
+            sheet,
+            _accept_range_bound(low.strip() or None),
+            _accept_range_bound(high.strip() or None),
+        )
     return ValuesFilter(field_name, _split_values(value), sheet)
 
 

@@ -7,7 +7,7 @@
 - `add-url` matches a pasted view URL exactly.
 - `add-fuzzy` ranks views whose name plus content URL match every query word (score at least `MIN_MATCH_SCORE` 0.75, so typos pass), and says `Showing the best 30 of N matches` when it trims the list.
 - `add-sheets` lists every sheet in a dashboard, hidden ones too, then after the pick prints each sheet's filters with their type and current value, plus the parameters.
-- `add-filters` turns `Field=a|b` into a values filter, and `Field=min..max` into a range filter only when that field is a range filter on the view. A name that isn't a filter there gets a note that it names no sheet and goes on the first chosen sheet as a values filter.
+- `add-filters` turns `Field=a|b` into a values filter, and `Field=min..max` into a range filter only when that field is a range filter on the view. A prompted filter names no sheet: it is saved on the first sheet in the job, and tabpull prints that, including when the field also exists on another worksheet. An impossible, relative, or run-time range bound is refused.
 - `add-flags` accepts `--site`, `--view`, `--sheet` (repeatable), `--filter`, `--param`, and `--name`, and does not prompt. It opens the view only to refuse a story, then writes the job. A `--filter` without ` @Sheet` is saved on the first `--sheet` after a note. Omit `--view` and `--sheet` and `add` still asks.
 - `add-save` appends a `[[job]]` block, records `site`, and refuses a duplicate job name.
 

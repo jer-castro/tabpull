@@ -323,3 +323,103 @@ def test_export_applies_a_blank_filter_to_the_first_sheet_only(
 def test_parse_job_rejects_invalid_jobs(raw: dict[str, object]) -> None:
     with pytest.raises(JobError, match="job 'j'"):
         parse_job(raw)
+
+
+@pytest.mark.parametrize(
+    ('raw', 'expected'),
+    [
+        ('2024-02-29', '2024-02-29'),
+        ('2/29/2024', '2024-02-29'),
+        ('1/3/2023', '2023-01-03'),
+        (' 2024-01-31 ', '2024-01-31'),
+        ('12', '12'),
+        ('-1.5', '-1.5'),
+        ('', ''),
+        (None, None),
+    ],
+)
+def test_normalize_range_bound_accepts_absolute_dates_and_numbers(
+    raw: str | None, expected: str | None
+) -> None:
+    assert crosstab.normalize_range_bound(raw) == expected
+
+
+@pytest.mark.parametrize(
+    'bound', ['2024-02-31', '2023-02-29', '2/31/2024', '2/30/2024']
+)
+def test_normalize_range_bound_rejects_an_impossible_date(bound: str) -> None:
+    with pytest.raises(JobError, match='not a real date') as exc:
+        crosstab.normalize_range_bound(bound)
+
+    assert 'YYYY-MM-DD or M/D/YYYY' in str(exc.value)
+    assert '2024-03-02' not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    'bound',
+    ['yesterday', 'today', 'last week', '7 days ago', '3 days ago', 'now()', 'TODAY()'],
+)
+def test_normalize_range_bound_refuses_a_relative_or_runtime_date(bound: str) -> None:
+    with pytest.raises(
+        JobError, match='relative date or a date computed at run time'
+    ) as exc:
+        crosstab.normalize_range_bound(bound)
+
+    assert 'YYYY-MM-DD or M/D/YYYY' in str(exc.value)
+
+
+def test_parse_filter_spec_rejects_bad_range_bounds_and_keeps_category_words() -> None:
+    with pytest.raises(JobError, match='not a real date'):
+        parse_filter_spec('Order Date=2024-02-31..2024-03-01')
+    with pytest.raises(JobError, match='relative date'):
+        parse_filter_spec('Order Date=yesterday..today @Totals')
+    assert parse_filter_spec('Ship Mode=yesterday') == ValuesFilter(
+        'Ship Mode', ['yesterday'], ''
+    )
+    assert parse_filter_spec('Order Date=1/3/2024..2/1/2024') == RangeFilter(
+        'Order Date', '', '1/3/2024', '2/1/2024'
+    )
+
+
+def test_export_rejects_a_bad_bound_before_opening_the_view(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def opened(*_args: object, **_kwargs: object) -> None:
+        msg = 'opened Tableau'
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(crosstab, 'open_view', opened)
+    settings = Settings(
+        'https://tableau.example',
+        'finance',
+        'tabpull',
+        'demo',
+        tmp_path / 'auth.json',
+        'pat-value',
+    )
+    for bound, match in (
+        ('2024-02-31', 'not a real date'),
+        ('yesterday', 'relative date'),
+    ):
+        job = Job(
+            'j',
+            'W/V',
+            ['A'],
+            'demo',
+            [RangeFilter('Order Date', 'A', bound, '2024-03-01')],
+        )
+        with pytest.raises(JobError, match=match):
+            crosstab.export_embed(cast('Any', object()), settings, job, tmp_path)
+
+
+def test_story_refusal_comes_from_one_message() -> None:
+    assert crosstab.STORY_REFUSAL == (
+        'Stories are not supported; use the dashboard inside it.'
+    )
+    guard = crosstab._STORY_GUARD_JS
+    assert guard.count("sheetType === 'story'") == 1
+    assert crosstab.STORY_REFUSAL in guard
+    assert crosstab.STORY_JS.count(guard) == 1
+    assert crosstab.INSPECT_JS.count(guard) == 1
+    assert "sheetType === 'story'" not in crosstab.STORY_JS.replace(guard, '', 1)
+    assert "sheetType === 'story'" not in crosstab.INSPECT_JS.replace(guard, '', 1)
