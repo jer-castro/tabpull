@@ -1,9 +1,10 @@
-"""Export Tableau crosstabs from specific dashboard sheets, with filters, as CSV.
+"""Export Tableau crosstab CSVs for the dashboard sheets you name.
 
 Commands:
-  add    find a view with your PAT, pick sheets and filters, save it as a job
-  run    export every job (or the named ones) in the jobs file
-  login  refresh the SSO browser session
+  setup  save a site's personal access token and SSO session
+  add    record a job (prompts, or flags for the site, view, sheets, and filters)
+  run    export jobs from the jobs file
+  login  refresh a site's SSO session
 """
 
 import argparse
@@ -16,14 +17,14 @@ import string
 import sys
 import tomllib
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, TypedDict
 
 import tableauserverclient as tsc
-from playwright.sync_api import BrowserContext, Page, sync_playwright
+from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -31,15 +32,18 @@ import wizard
 from tableau import (
     MissingSettingsError,
     Settings,
+    UnknownSiteError,
     browser_session,
-    load_settings,
+    check_site_name,
+    exports_dir,
+    jobs_path,
+    list_sites,
+    load_site,
     parse_tableau_url,
     rest_session,
     sso_login,
 )
 
-DEFAULT_JOBS = Path('jobs.toml')
-DEFAULT_OUT = Path('exports')
 VIZ_LOAD_TIMEOUT_MS = 180_000
 DOWNLOAD_TIMEOUT_MS = 300_000
 MAX_SEARCH_RESULTS = 30
@@ -138,6 +142,7 @@ class Job:
     name: str
     view: str
     sheets: list[str]
+    site: str
     filters: list[ValuesFilter | RangeFilter] = field(default_factory=list)
     params: dict[str, str] = field(default_factory=dict)
 
@@ -156,11 +161,17 @@ class ViewInfo(TypedDict):
     params: list[dict[str, str]]
 
 
-def _parse_filter(
-    raw: dict[str, Any], default_sheet: str
-) -> ValuesFilter | RangeFilter:
-    raw = {'sheet': default_sheet} | raw
-    return ValuesFilter(**raw) if 'values' in raw else RangeFilter(**raw)
+def _parse_filter(raw: object) -> ValuesFilter | RangeFilter:
+    if not isinstance(raw, dict):
+        msg = f'filter {raw!r} is not a table'
+        raise JobError(msg)
+    raw = dict(raw)
+    raw['sheet'] = str(raw.get('sheet') or '').strip()
+    try:
+        return ValuesFilter(**raw) if 'values' in raw else RangeFilter(**raw)
+    except TypeError as e:
+        msg = str(e)
+        raise JobError(msg) from e
 
 
 def parse_job(raw: object) -> Job:
@@ -168,11 +179,17 @@ def parse_job(raw: object) -> Job:
         msg = f'job {raw!r} is not a table'
         raise JobError(msg)
     raw = dict(raw)
+    name = raw.get('name', '?')
     if not raw.get('sheets'):
-        msg = f'job {raw.get("name", "?")!r}: needs at least one sheet'
+        msg = f'job {name!r}: needs at least one sheet'
         raise JobError(msg)
+    site = raw.get('site')
+    if not isinstance(site, str) or not site.strip():
+        msg = f'job {name!r}: needs a site'
+        raise JobError(msg)
+    raw['site'] = site.strip()
     try:
-        filters = [_parse_filter(f, raw['sheets'][0]) for f in raw.pop('filters', [])]
+        filters = [_parse_filter(item) for item in raw.pop('filters', [])]
         return Job(**raw, filters=filters)
     except (TypeError, KeyError, JobError) as e:
         msg = f'job {raw.get("name", "?")!r}: {e}'
@@ -204,15 +221,38 @@ def _toml(value: object) -> str:
 def job_to_toml(job: Job) -> str:
     fields = asdict(job)
     fields['filters'] = [
-        {k: v for k, v in f.items() if v or isinstance(v, list)}
-        for f in fields['filters']
+        {k: v for k, v in item.items() if v or isinstance(v, list)}
+        for item in fields['filters']
     ]
     lines = [
         '[[job]]',
         f'name = {_toml(fields.pop("name"))}',
+        f'site = {_toml(fields.pop("site"))}',
     ]
     lines += [f'{key} = {_toml(value)}' for key, value in fields.items() if value]
     return '\n'.join(lines) + '\n'
+
+
+def resolved_filters(job: Job) -> list[ValuesFilter | RangeFilter]:
+    """Apply a filter that names no sheet on the first sheet, and say so.
+
+    The filter is not copied onto the other sheets. A sheet named on the filter is left alone.
+    """
+    if not job.sheets:
+        msg = f'job {job.name!r}: needs at least one sheet'
+        raise JobError(msg)
+    default = job.sheets[0]
+    resolved: list[ValuesFilter | RangeFilter] = []
+    for item in job.filters:
+        if item.sheet:
+            resolved.append(item)
+            continue
+        print(
+            f'  {job.name}: filter {item.field!r} names no sheet; '
+            f'applying it on {default!r}, the first sheet in the job.'
+        )
+        resolved.append(replace(item, sheet=default))
+    return resolved
 
 
 def normalize_range_bound(value: str | None) -> str | None:
@@ -283,12 +323,13 @@ def open_view(context: BrowserContext, settings: Settings, view: str) -> Page:
 def export_embed(
     context: BrowserContext, settings: Settings, job: Job, out_dir: Path
 ) -> list[Path]:
+    filters = resolved_filters(job)
     page = open_view(context, settings, job.view)
     try:
         page.evaluate(
             APPLY_JS,
             {
-                'filters': [filter_payload(f) for f in job.filters],
+                'filters': [filter_payload(item) for item in filters],
                 'params': job.params,
             },
         )
@@ -308,29 +349,57 @@ def export_embed(
         page.close()
 
 
-def run_jobs(settings: Settings, jobs: Sequence[Job], out_dir: Path) -> int:
-    """Export every job, carrying on past failures. Returns the number of failed jobs."""
-    failed = 0
-    if not jobs:
-        return 0
-    with sync_playwright() as pw:
+def _fail(name: str, message: str) -> None:
+    print(f'  ✗ {name}: {message.partition("\n")[0] or message}')
+
+
+def _export_group(
+    pw: Playwright, site_name: str, site_jobs: Sequence[Job], out_dir: Path
+) -> int:
+    try:
+        settings = load_site(site_name)
+    except (UnknownSiteError, MissingSettingsError, ValueError) as e:
+        for job in site_jobs:
+            _fail(job.name, str(e))
+        return len(site_jobs)
+    print(
+        f'  site {settings.name}: {settings.server}, site {settings.site or "(default)"}'
+    )
+    try:
         context = browser_session(pw, settings)
-        for job in jobs:
-            try:
-                paths = export_embed(context, settings, job, out_dir)
-            except (
-                JobError,
-                PlaywrightError,
-                OSError,
-                UnicodeError,
-                csv.Error,
-            ) as e:
-                failed += 1
-                print(
-                    f'  ✗ {job.name}: {str(e).partition("\n")[0] or repr(e)}'
-                )  # Playwright appends the JS stack
-            else:
-                print(f'  ✓ {job.name}: {", ".join(map(str, paths))}')
+    except SystemExit as e:
+        message = (
+            e.code if isinstance(e.code, str) else 'could not open a browser session'
+        )
+        for job in site_jobs:
+            _fail(job.name, message)
+        return len(site_jobs)
+    failed = 0
+    for job in site_jobs:
+        try:
+            paths = export_embed(context, settings, job, out_dir)
+        except (JobError, PlaywrightError, OSError, UnicodeError, csv.Error) as e:
+            failed += 1
+            _fail(job.name, str(e))
+        else:
+            print(f'  ✓ {job.name}: {", ".join(map(str, paths))}')
+    return failed
+
+
+def run_jobs(jobs: Sequence[Job], out_dir: Path) -> int:
+    """Export every job, carrying on past failures. Returns the number of failed jobs."""
+    groups: list[tuple[str, list[Job]]] = []
+    for job in jobs:
+        if groups and groups[-1][0] == job.site:
+            groups[-1][1].append(job)
+        else:
+            groups.append((job.site, [job]))
+    if not groups:
+        return 0
+    failed = 0
+    with sync_playwright() as pw:
+        for site_name, site_jobs in groups:
+            failed += _export_group(pw, site_name, site_jobs, out_dir)
     return failed
 
 
@@ -424,13 +493,13 @@ def _build_embed_job(
 
     by_field: dict[str, tuple[str, str]] = {}
     for sheet in sorted(sheets, key=lambda s: s['name'] not in chosen):
-        for f in sheet['filters']:
-            by_field.setdefault(f['field'], (sheet['name'], f['type']))
+        for item in sheet['filters']:
+            by_field.setdefault(item['field'], (sheet['name'], item['type']))
             print(
-                f'  filter  {f["field"]} ({f["type"]}) on {sheet["name"]!r}: {f["current"]}'
+                f'  filter  {item["field"]} ({item["type"]}) on {sheet["name"]!r}: {item["current"]}'
             )
-    for p in info['params']:
-        print(f'  param   {p["name"]}: {p["current"]}')
+    for param in info['params']:
+        print(f'  param   {param["name"]}: {param["current"]}')
 
     filters: list[ValuesFilter | RangeFilter] = []
     for key, value in _prompt_pairs(
@@ -439,7 +508,7 @@ def _build_embed_job(
         sheet, kind = by_field.get(key, (chosen[0], 'categorical'))
         if key not in by_field:
             print(
-                f'  {key!r} is not a filter on these sheets; applying it to {sheet!r} anyway.'
+                f'  {key!r} names no sheet; applying it on {sheet!r}, the first sheet in the job.'
             )
         if kind == 'range':
             low, _, high = value.partition('..')
@@ -449,96 +518,272 @@ def _build_embed_job(
         else:
             filters.append(ValuesFilter(key, _split_values(value), sheet))
     params = dict(_prompt_pairs('Parameters as Name=value. Blank line when done.'))
-    return Job(name, view, chosen, filters, params)
+    return Job(name, view, chosen, settings.name, filters, params)
 
 
-def add_job(settings: Settings, jobs_path: Path) -> None:
+def _using_site(settings: Settings) -> None:
+    print(
+        f'Using site {settings.name!r} ({settings.server}, '
+        f'site {settings.site or "(default)"}).'
+    )
+
+
+def append_job(path: Path, job: Job) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = job_to_toml(job)
+    prefix = '\n' if path.exists() and path.stat().st_size else ''
+    with path.open('a', encoding='utf-8') as handle:
+        handle.write(prefix + text)
+    print(f'\nSaved job {job.name!r} to {path}:\n\n{text}')
+    print(f'Run it: tabpull run {job.name}')
+
+
+def add_job(settings: Settings, jobs_path: Path, name: str | None = None) -> None:
+    _using_site(settings)
     item = _find_view(settings)
     view = _view_path(item)
-    existing = {j.name for j in load_jobs(jobs_path)}
+    existing = {job.name for job in load_jobs(jobs_path)}
     default_name = _slug(item.name or view)
-    name = input(f'Job name [{default_name}]: ').strip() or default_name
+    if name is None:
+        name = input(f'Job name [{default_name}]: ').strip() or default_name
     if name in existing:
         msg = f'A job named {name!r} already exists in {jobs_path}.'
         raise SystemExit(msg)
 
     with sync_playwright() as pw:
         job = _build_embed_job(browser_session(pw, settings), settings, name, view)
-    text = job_to_toml(job)
-    with jobs_path.open('a', encoding='utf-8') as f:
-        f.write('\n' + text)
-    print(f'\nSaved job {name!r} to {jobs_path}:\n\n{text}')
-    print(f'Run it: uv run src/crosstab.py run {name}')
+    append_job(jobs_path, job)
 
 
-def _settings() -> Settings:
+def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
+    """Parse `Field=a|b` or `Field=min..max`, with an optional ` @Sheet`."""
+    body, sep, sheet = spec.rpartition(' @')
+    if not sep:
+        body, sheet = spec, ''
+    field_name, eq, value = body.partition('=')
+    field_name = field_name.strip()
+    sheet = sheet.strip()
+    if not eq or not field_name:
+        msg = (
+            f'filter {spec!r} should look like Field=a|b or Field=min..max, '
+            'with an optional " @Sheet"'
+        )
+        raise JobError(msg)
+    if '..' in value:
+        low, _, high = value.partition('..')
+        return RangeFilter(field_name, sheet, low.strip() or None, high.strip() or None)
+    return ValuesFilter(field_name, _split_values(value), sheet)
+
+
+def parse_param_spec(spec: str) -> tuple[str, str]:
+    key, sep, value = spec.partition('=')
+    if not sep or not key.strip():
+        msg = f'param {spec!r} should look like Name=value'
+        raise JobError(msg)
+    return key.strip(), value.strip()
+
+
+def view_from_flag(value: str) -> str:
+    text = value.strip()
+    if text.startswith(('http://', 'https://')):
+        parsed = parse_tableau_url(text)
+        if not parsed.view:
+            msg = f'{text!r} has no view. Use Workbook/View or a view URL.'
+            raise JobError(msg)
+        return parsed.view
+    workbook, sep, view = text.partition('/')
+    if not sep or not workbook or not view or '/' in view:
+        msg = f'{text!r} should look like Workbook/View.'
+        raise JobError(msg)
+    return f'{workbook}/{view}'
+
+
+def _require_flag_shape(args: argparse.Namespace) -> None:
+    if not args.view:
+        msg = (
+            'Pass --view Workbook/View, and --sheet at least once, '
+            'to add a job without prompts.'
+        )
+        raise SystemExit(msg)
+    if not args.sheets:
+        msg = 'Pass --sheet at least once to add a job without prompts.'
+        raise SystemExit(msg)
+
+
+def add_job_from_flags(
+    settings: Settings, args: argparse.Namespace, jobs_file: Path
+) -> None:
+    view = view_from_flag(args.view)
+    filters = [parse_filter_spec(spec) for spec in args.filter_specs or []]
+    params = dict(parse_param_spec(spec) for spec in args.params or [])
+    name = args.name or _slug(view)
+    if any(job.name == name for job in load_jobs(jobs_file)):
+        msg = f'A job named {name!r} already exists in {jobs_file}.'
+        raise SystemExit(msg)
+    _using_site(settings)
+    job = Job(name, view, list(args.sheets), settings.name, filters, params)
+    append_job(jobs_file, replace(job, filters=resolved_filters(job)))
+
+
+def _flag_mode(args: argparse.Namespace) -> bool:
+    return bool(args.view or args.sheets or args.filter_specs or args.params)
+
+
+def _configured_name(explicit: str | None) -> str:
+    if explicit:
+        try:
+            return check_site_name(explicit)
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
+    names = list_sites()
+    if len(names) == 1:
+        return names[0]
+    if not names:
+        msg = 'No Tableau site configured. Run: tabpull setup'
+    else:
+        msg = f'Pass --site. Configured sites: {", ".join(names)}'
+    raise SystemExit(msg)
+
+
+def _pick_site(explicit: str | None) -> Settings:
+    if explicit or not sys.stdin.isatty():
+        return load_site(_configured_name(explicit))
+    names = list_sites()
+    if len(names) == 1:
+        return load_site(names[0])
+    if not names:
+        print('No Tableau site configured. Starting setup.')
+        return load_site(wizard.main(None))
+    print('Sites:')
+    for index, name in enumerate(names, 1):
+        settings = load_site(name)
+        print(
+            f'  [{index}] {name}  ({settings.server}, site {settings.site or "(default)"})'
+        )
+    return load_site(names[_choose('Which site?', len(names))[0]])
+
+
+def _cmd_login(site: str | None) -> None:
     try:
-        return load_settings()
-    except MissingSettingsError as e:
-        if not sys.stdin.isatty():
-            msg = f'{e}. Run: uv run src/wizard.py'
-            raise SystemExit(msg) from e
-        print(f'{e}. Starting setup.')
-        wizard.main()
-        return load_settings()
+        settings = _pick_site(site)
+    except (UnknownSiteError, MissingSettingsError, ValueError) as e:
+        raise SystemExit(str(e)) from e
+    print(
+        f'Signing in to {settings.server}, site {settings.site or "(default)"} '
+        f'(local name {settings.name}).'
+    )
+    with sync_playwright() as pw:
+        sso_login(pw, settings)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _cmd_add(args: argparse.Namespace, jobs_file: Path) -> None:
+    try:
+        if _flag_mode(args):
+            _require_flag_shape(args)
+            add_job_from_flags(load_site(_configured_name(args.site)), args, jobs_file)
+            return
+        add_job(_pick_site(args.site), jobs_file, args.name)
+    except (
+        JobError,
+        UnknownSiteError,
+        MissingSettingsError,
+        PlaywrightError,
+        tomllib.TOMLDecodeError,
+        OSError,
+        ValueError,
+    ) as e:
+        message = str(e).partition('\n')[0] or repr(e)
+        raise SystemExit(message) from e
+
+
+def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
+    try:
+        jobs = load_jobs(jobs_file)
+    except (JobError, tomllib.TOMLDecodeError, OSError) as e:
+        msg = f'{jobs_file}: {e}'
+        raise SystemExit(msg) from e
+    unknown = set(args.names) - {job.name for job in jobs}
+    if unknown or not jobs:
+        msg = (
+            f'Unknown jobs: {", ".join(sorted(unknown))}'
+            if unknown
+            else f'No jobs in {jobs_file}. Run: tabpull add'
+        )
+        raise SystemExit(msg)
+    selected = [job for job in jobs if not args.names or job.name in args.names]
+    print(f'Exporting {len(selected)} job(s) to {out_dir}/')
+    return 1 if run_jobs(selected, out_dir) else 0
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
         '--jobs',
         type=Path,
-        default=DEFAULT_JOBS,
-        help='jobs file (default: %(default)s)',
+        help='jobs file for this run (default: the config directory jobs.toml)',
     )
     parser.add_argument(
         '--out',
         type=Path,
-        default=DEFAULT_OUT,
-        help='output folder (default: %(default)s)',
+        help='output folder for this run (default: the data directory exports folder)',
     )
     commands = parser.add_subparsers(dest='command', required=True)
-    commands.add_parser('add', help='find a view, pick sheets and filters, save a job')
+    setup = commands.add_parser('setup', help='save a site token and browser session')
+    setup.add_argument('--site', help='local name for this site; each job refers to it')
+    add = commands.add_parser(
+        'add', help='save a job, prompting unless view and sheets are flags'
+    )
+    add.add_argument('--site', help='local site name from tabpull setup')
+    add.add_argument('--view', help='Workbook/View, or a view URL')
+    add.add_argument('--name', help='job name')
+    add.add_argument(
+        '--sheet',
+        action='append',
+        dest='sheets',
+        metavar='SHEET',
+        help='worksheet to crosstab (repeat for several)',
+    )
+    add.add_argument(
+        '--filter',
+        action='append',
+        dest='filter_specs',
+        metavar='SPEC',
+        help='Field=a|b or Field=min..max, optional " @Sheet" (repeatable)',
+    )
+    add.add_argument(
+        '--param',
+        action='append',
+        dest='params',
+        metavar='NAME=VALUE',
+        help='parameter Name=value (repeatable)',
+    )
     run = commands.add_parser('run', help='export jobs')
     run.add_argument('names', nargs='*', help='only these jobs (default: all)')
-    commands.add_parser('login', help='refresh the SSO browser session')
-    args = parser.parse_args(argv)
+    login = commands.add_parser('login', help='refresh a site SSO browser session')
+    login.add_argument(
+        '--site', help='local site name (default: the only configured site)'
+    )
+    return parser
 
-    settings = _settings()
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    jobs_file = args.jobs or jobs_path()
+    out_dir = args.out or exports_dir()
     match args.command:
+        case 'setup':
+            wizard.main(args.site)
+            return 0
         case 'login':
-            with sync_playwright() as pw:
-                sso_login(pw, settings)
+            _cmd_login(args.site)
+            return 0
         case 'add':
-            try:
-                add_job(settings, args.jobs)
-            except (
-                JobError,
-                PlaywrightError,
-                tomllib.TOMLDecodeError,
-                OSError,
-            ) as e:
-                raise SystemExit(str(e).partition('\n')[0] or repr(e)) from e
+            _cmd_add(args, jobs_file)
             return 0
         case 'run':
-            try:
-                jobs = load_jobs(args.jobs)
-            except (JobError, tomllib.TOMLDecodeError) as e:
-                msg = f'{args.jobs}: {e}'
-                raise SystemExit(msg) from e
-            unknown = set(args.names) - {j.name for j in jobs}
-            if unknown or not jobs:
-                msg = (
-                    f'Unknown jobs: {", ".join(sorted(unknown))}'
-                    if unknown
-                    else f'No jobs in {args.jobs}. Run: uv run src/crosstab.py add'
-                )
-                raise SystemExit(msg)
-            selected = [j for j in jobs if not args.names or j.name in args.names]
-            print(f'Exporting {len(selected)} job(s) to {args.out}/')
-            return 1 if run_jobs(settings, selected, args.out) else 0
+            return _cmd_run(args, jobs_file, out_dir)
     return 0
 
 
@@ -547,4 +792,5 @@ def cli() -> None:
 
 
 if __name__ == '__main__':
-    cli()
+    print('Run: tabpull setup | add | run | login', file=sys.stderr)
+    sys.exit(2)

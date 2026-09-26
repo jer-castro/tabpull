@@ -28,11 +28,12 @@ from crosstab import (
     open_view,
 )
 from tableau import (
-    AUTH_STATE,
     MissingSettingsError,
     Settings,
+    jobs_path,
     launch_browser,
-    load_settings,
+    list_sites,
+    load_site,
     session_valid,
 )
 
@@ -51,48 +52,82 @@ READ_RANGE_JS = """async ({ sheet, field }) => {
 }"""
 
 
+def _settings(site: str | None) -> Settings:
+    if site:
+        return load_site(site)
+    names = list_sites()
+    if len(names) == 1:
+        return load_site(names[0])
+    listed = ', '.join(names) or '(none)'
+    msg = f'Pass --site. Configured sites: {listed}'
+    raise SystemExit(msg)
+
+
 def _browser_context(
     browser: Browser, settings: Settings, timezone: str = 'UTC'
 ) -> BrowserContext:
-    context = browser.new_context(storage_state=AUTH_STATE, timezone_id=timezone)
+    context = browser.new_context(
+        storage_state=settings.auth_path, timezone_id=timezone
+    )
     if not session_valid(context, settings):
-        msg = 'SSO session expired. A human must run: uv run src/crosstab.py login'
+        msg = (
+            f'SSO session for site {settings.name!r} is missing or expired. '
+            f'A human must run: tabpull login --site {settings.name}'
+        )
         raise SystemExit(msg)
     return context
 
 
 def doctor() -> int:
-    ok = True
-    try:
-        settings = load_settings()
-    except MissingSettingsError as e:
-        print(f'settings   FAIL {e}; a human must run: uv run src/wizard.py')
+    names = list_sites()
+    if not names:
+        print('settings   FAIL no sites configured; a human must run: tabpull setup')
         return 1
-    print(
-        f'settings   ok  server={settings.server} site={settings.site or "(default)"}'
-    )
+    ok = True
+    for name in names:
+        try:
+            settings = load_site(name)
+        except MissingSettingsError as e:
+            ok = False
+            print(f'settings   FAIL {name}: {e}')
+            continue
+        print(
+            f'settings   ok  {name} server={settings.server} '
+            f'site={settings.site or "(default)"}'
+        )
+        auth = settings.auth_path
+        if not auth.exists():
+            ok = False
+            print(
+                f'session    FAIL {name} {auth} missing; a human must run: '
+                f'tabpull login --site {name}'
+            )
+            continue
+        with sync_playwright() as pw:
+            browser = launch_browser(pw, headless=True)
+            context = browser.new_context(storage_state=auth)
+            valid = session_valid(context, settings)
+            browser.close()
+        print(
+            f'session    {"ok" if valid else "FAIL"}  {name} {auth} '
+            f'(mode {auth.stat().st_mode & 0o777:o})'
+        )
+        ok = ok and valid
+    jobs_file = jobs_path()
     try:
-        jobs = load_jobs(Path('jobs.toml'))
-        print(f'jobs.toml  ok  {len(jobs)} job(s): {", ".join(j.name for j in jobs)}')
+        jobs = load_jobs(jobs_file)
+        print(
+            f'jobs       ok  {jobs_file} {len(jobs)} job(s): '
+            f'{", ".join(job.name for job in jobs)}'
+        )
     except (JobError, tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as e:
         ok = False
-        print(f'jobs.toml  FAIL {e}')
-    if not AUTH_STATE.exists():
-        print(f'session    FAIL {AUTH_STATE} missing; a human must run login')
-        return 1
-    with sync_playwright() as pw:
-        browser = launch_browser(pw, headless=True)
-        context = browser.new_context(storage_state=AUTH_STATE)
-        valid = session_valid(context, settings)
-        browser.close()
-    print(
-        f'session    {"ok" if valid else "FAIL"}  {AUTH_STATE} (mode {AUTH_STATE.stat().st_mode & 0o777:o})'
-    )
-    return 0 if ok and valid else 1
+        print(f'jobs       FAIL {jobs_file}: {e}')
+    return 0 if ok else 1
 
 
-def inspect(view: str) -> int:
-    settings = load_settings()
+def inspect(view: str, site: str | None) -> int:
+    settings = _settings(site)
     with sync_playwright() as pw:
         browser = launch_browser(pw, headless=True)
         page = open_view(_browser_context(browser, settings), settings, view)
@@ -103,10 +138,10 @@ def inspect(view: str) -> int:
 
 def date_filter(args: argparse.Namespace) -> int:
     """Apply one date range in several browser timezones; the applied range and the export must not move."""
-    settings = load_settings()
+    settings = _settings(args.site)
     range_filter = RangeFilter(args.field, args.sheet, args.min, args.max)
     sent = filter_payload(range_filter)
-    job = Job('date-filter', args.view, [args.sheet], [range_filter])
+    job = Job('date-filter', args.view, [args.sheet], settings.name, [range_filter])
     results: list[dict[str, Any]] = []
     with sync_playwright() as pw:
         browser = launch_browser(pw, headless=True)
@@ -173,6 +208,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    parser.add_argument(
+        '--site', help='local site name when more than one site is configured'
+    )
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('doctor')
     commands.add_parser('inspect').add_argument('view')
@@ -188,7 +226,7 @@ def main() -> int:
         case 'doctor':
             return doctor()
         case 'inspect':
-            return inspect(args.view)
+            return inspect(args.view, args.site)
         case _:
             return date_filter(args)
 

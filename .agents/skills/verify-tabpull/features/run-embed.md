@@ -1,6 +1,6 @@
 # Embed export
 
-`run` opens each job's view in a headless browser, sets its parameters and filters, and writes one UTF-8 CSV per listed sheet to `exports/<job>/<sheet>.csv` (both names slugged, so `B Real Sheet` becomes `B_Real_Sheet.csv`), the same content as Download > Crosstab > CSV.
+`run` opens each job's view in a headless browser signed in as the site that job names, sets its parameters and filters, and writes one UTF-8 CSV per listed sheet to `<out>/<job>/<sheet>.csv` (both names slugged, so `B Real Sheet` becomes `B_Real_Sheet.csv`), the same content as Download > Crosstab > CSV. The default output folder is the data-directory `exports/`. `--out` replaces it for one run.
 
 ## Sub-features
 
@@ -9,11 +9,13 @@
 - `embed-range-date` applies a `YYYY-MM-DD` or `M/D/YYYY` `min`/`max` range as the same calendar days in any browser timezone, and rejects an impossible `M/D/YYYY` date like `2/30/2024`.
 - `embed-params` sets parameters before filters.
 - `embed-failure` reports `✗ <job>: <reason>` for a broken job, keeps going, and exits 1.
+- `embed-default-sheet` prints a note when a filter omits `sheet`, applies that filter on the first sheet in the job, and does not copy it onto the other sheets.
+- `embed-site` loads the token and browser session for `job.site`. A missing site fails that job and run continues with the others.
 
 ## How to get to it (user POV)
 
-- `uv run src/crosstab.py run` exports every job in the jobs file.
-- `uv run src/crosstab.py run <name> ...` exports only the named jobs.
+- `tabpull run` exports every job in the jobs file.
+- `tabpull run <name> ...` exports only the named jobs.
 
 ## Driving it with the CLI
 
@@ -22,8 +24,9 @@ Preconditions:
 - Doctor is `ok`.
 - `verify.py inspect CrosstabMe/Dashboard1` lists `B Real Sheet` with `Order Date` (range) and `Ship Mode` (categorical).
 
-- **Values filter.** Write `$E/embed/jobs.toml` with a job on `view = "CrosstabMe/Dashboard1"`, `sheets = ["B Real Sheet"]`, `filters = [{ field = "Ship Mode", values = ["First Class"] }]`, plus a second job with no filters. Run `uv run src/crosstab.py --jobs $E/embed/jobs.toml --out $E/embed/exports run 2>&1 | tee $E/embed/run.log`. You should get two `✓` lines and exit 0, and the two CSVs' sha256 must differ.
-- **Date range across timezones.** Run `uv run python .agents/skills/verify-tabpull/scripts/verify.py date-filter CrosstabMe/Dashboard1 --sheet "B Real Sheet" --field "Order Date" --min 2024-01-01 --max 2024-01-31 --out $E/date`. You should see `PASS`, a `min`/`max` `value` of `2024-01-01T00:00:00.000Z`/`2024-01-31T00:00:00.000Z` in all three timezone lines, the same `sha=` prefix on all three, and `evidence: $E/date/date-filter.json` (full hashes are in the JSON).
+- **Values filter.** Write `$E/embed/jobs.toml` with a job on `site = "<site>"`, `view = "CrosstabMe/Dashboard1"`, `sheets = ["B Real Sheet"]`, `filters = [{ field = "Ship Mode", values = ["First Class"], sheet = "B Real Sheet" }]`, plus a second job with the same site and view, the same sheet, and no filters. Run `uv run tabpull --jobs $E/embed/jobs.toml --out $E/embed/exports run 2>&1 | tee $E/embed/run.log`. You should get two `✓` lines and exit 0, and the two CSVs' sha256 must differ.
+- **Default sheet.** Repeat with the filter's `sheet` key removed and a second sheet in `sheets` (for example `A Title Sheet`). The log should contain `filter 'Ship Mode' names no sheet; applying it on 'B Real Sheet', the first sheet in the job.` The command should still export both sheets.
+- **Date range across timezones.** Run `uv run python .agents/skills/verify-tabpull/scripts/verify.py --site <site> date-filter CrosstabMe/Dashboard1 --sheet "B Real Sheet" --field "Order Date" --min 2024-01-01 --max 2024-01-31 --out $E/date`. You should see `PASS`, a `min`/`max` `value` of `2024-01-01T00:00:00.000Z`/`2024-01-31T00:00:00.000Z` in all three timezone lines, the same `sha=` prefix on all three, and `evidence: $E/date/date-filter.json` (full hashes are in the JSON). `--site` may be omitted when only one site is configured.
 - **M/D/YYYY bounds.** Rerun with `--min 1/1/2024 --max 1/31/2024 --out $E/date-us`. It should `PASS` with the same applied days and the same sha256 as the `YYYY-MM-DD` run.
 - **Date control.** Rerun with `--max 2024-01-15 --out $E/date-control`. It should `PASS` again with a sha256 that differs from the first run.
 - **Impossible date.** Add a job with `{ field = "Order Date", min = "2/30/2024", max = "3/1/2024" }` and run it. The jobs file loads fine; the export fails with `✗ <job>: '2/30/2024' is not a real date; use YYYY-MM-DD or M/D/YYYY`, and the run exits 1. Only `M/D/YYYY` bounds are calendar-checked; a bad `YYYY-MM-DD` goes to Tableau as is.
