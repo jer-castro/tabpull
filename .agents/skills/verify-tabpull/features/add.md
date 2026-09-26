@@ -8,7 +8,7 @@
 - `add-fuzzy` ranks views whose name plus content URL match every query word (score at least `MIN_MATCH_SCORE` 0.75, so typos pass), and says `Showing the best 30 of N matches` when it trims the list.
 - `add-sheets` lists every sheet in a dashboard, hidden ones too, then after the pick prints each sheet's filters with their type and current value, plus the parameters.
 - `add-filters` turns `Field=a|b` into a values filter, and `Field=min..max` into a range filter only when that field is a range filter on the view. A name that isn't a filter there gets a note that it names no sheet and goes on the first chosen sheet as a values filter.
-- `add-flags` accepts `--site`, `--view`, `--sheet` (repeatable), `--filter`, `--param`, and `--name`, writes the job, and does not prompt or call Tableau. A `--filter` without ` @Sheet` is saved on the first `--sheet` after a note. Omit `--view` and `--sheet` and `add` still asks.
+- `add-flags` accepts `--site`, `--view`, `--sheet` (repeatable), `--filter`, `--param`, and `--name`, and does not prompt. It opens the view only to refuse a story, then writes the job. A `--filter` without ` @Sheet` is saved on the first `--sheet` after a note. Omit `--view` and `--sheet` and `add` still asks.
 - `add-save` appends a `[[job]]` block, records `site`, and refuses a duplicate job name.
 
 ## How to get to it (user POV)
@@ -33,5 +33,5 @@ Preconditions:
 ## Gotchas
 
 - The answer after the job name picks sheets by number in the printed order, which is not alphabetical. A published worksheet goes straight to that sheet picker, the same as a dashboard.
-- `add` asks for the URL or name first, then downloads the full view list, unless `--view` is set. On a very large site the wait comes before the match list. Flag add does not download the view list.
+- `add` asks for the URL or name first, then downloads the full view list, unless `--view` is set. On a very large site the wait comes before the match list. Flag add does not download the view list; it only opens the view to refuse a story.
 - Pass `--site <site>` in piped drives. With more than one configured site and no `--site`, a site picker is the first prompt.

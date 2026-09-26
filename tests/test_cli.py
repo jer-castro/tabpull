@@ -55,6 +55,16 @@ def _notty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys.stdin, 'isatty', lambda: False)
 
 
+def _allow_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Page:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'browser_session', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(crosstab, 'open_view', lambda *_args, **_kwargs: Page())
+
+
 def test_linux_paths_follow_xdg_and_ignore_the_working_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -196,6 +206,7 @@ def test_add_flags_write_a_job_without_prompts(
         raise AssertionError(msg)
 
     monkeypatch.setattr('builtins.input', refuse_prompt)
+    _allow_view(monkeypatch)
     code = crosstab.main(
         [
             '--jobs',
@@ -269,6 +280,7 @@ def test_add_flags_imply_the_only_site_and_default_jobs_file(
         'builtins.input',
         lambda prompt='': (_ for _ in ()).throw(AssertionError(prompt)),
     )
+    _allow_view(monkeypatch)
 
     assert (
         crosstab.main(
@@ -306,6 +318,103 @@ def test_add_without_flags_still_prompts(
         crosstab.main(['add', '--sheet', 'A'])
     with pytest.raises(SystemExit, match='--sheet'):
         crosstab.main(['add', '--view', 'Sales/Overview', '--filter', 'Region=West'])
+
+
+def test_flag_add_and_run_refuse_a_story(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _xdg(monkeypatch, tmp_path)
+    tableau.save_site('demo', _site_values())
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'browser_session', lambda *_args, **_kwargs: object())
+
+    def refuse_story(_context: object, _settings: Settings, view: str) -> object:
+        msg = 'Stories are not supported; use the dashboard inside it.'
+        raise JobError(msg)
+
+    monkeypatch.setattr(crosstab, 'open_view', refuse_story)
+    monkeypatch.setattr(
+        'builtins.input',
+        lambda prompt='': (_ for _ in ()).throw(AssertionError(prompt)),
+    )
+    with pytest.raises(SystemExit, match='Stories are not supported'):
+        crosstab.main(
+            [
+                'add',
+                '--view',
+                'Book/Story1',
+                '--sheet',
+                'A Title',
+                '--name',
+                'story-job',
+            ]
+        )
+    assert not tableau.jobs_path().exists()
+
+    jobs = tmp_path / 'jobs.toml'
+    out = tmp_path / 'out'
+    jobs.write_text(
+        """
+[[job]]
+name = "story-job"
+site = "demo"
+view = "Book/Story1"
+sheets = ["A Title"]
+
+[[job]]
+name = "ok"
+site = "demo"
+view = "Book/Dash"
+sheets = ["A"]
+""",
+        encoding='utf-8',
+    )
+    # The download path is unused: a story raises before export, and the dashboard
+    # job's fake page has no file. Point expect_download at a real CSV.
+    raw = tmp_path / 'download.csv'
+    raw.write_text('a,b\n1,2\n', encoding='utf-8')
+
+    class Download:
+        def path(self) -> str:
+            return str(raw)
+
+    class Expect:
+        value = Download()
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def open_view_for_run(_context: object, _settings: Settings, view: str) -> object:
+        if view == 'Book/Story1':
+            msg = 'Stories are not supported; use the dashboard inside it.'
+            raise JobError(msg)
+
+        class Page:
+            def evaluate(self, script: str, arg: object = None) -> None:
+                return None
+
+            def expect_download(self, timeout: int) -> Expect:
+                return Expect()
+
+            def close(self) -> None:
+                return None
+
+        return Page()
+
+    monkeypatch.setattr(crosstab, 'open_view', open_view_for_run)
+    code = crosstab.main(['--jobs', str(jobs), '--out', str(out), 'run'])
+    text = capsys.readouterr().out
+
+    assert code == 1
+    assert (
+        '✗ story-job: Stories are not supported; use the dashboard inside it.' in text
+    )
+    assert '✓ ok:' in text
+    assert not (out / 'story-job').exists()
+    assert (out / 'ok' / 'A.csv').is_file()
 
 
 def test_login_and_run_name_each_site_without_printing_the_token(

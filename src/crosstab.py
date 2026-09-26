@@ -79,6 +79,10 @@ try {
 </script>
 """)
 
+STORY_JS = """() => {
+  if (window.viz.workbook.activeSheet.sheetType === 'story') throw new Error('Stories are not supported; use the dashboard inside it.');
+}"""
+
 INSPECT_JS = """async () => {
   const active = window.viz.workbook.activeSheet;
   if (active.sheetType === 'story') throw new Error('Stories are not supported; use the dashboard inside it.');
@@ -297,6 +301,17 @@ def output_path(out_dir: Path, job: Job, sheet: str) -> Path:
     return out_dir / _slug(job.name) / f'{_slug(sheet)}.csv'
 
 
+def _refuse_story(page: Page) -> None:
+    """Refuse a story the same way interactive add does, once the view has loaded."""
+    try:
+        page.evaluate(STORY_JS)
+    except PlaywrightError as e:
+        if 'Stories are not supported' not in str(e):
+            raise
+        msg = 'Stories are not supported; use the dashboard inside it.'
+        raise JobError(msg) from e
+
+
 def open_view(context: BrowserContext, settings: Settings, view: str) -> Page:
     page = context.new_page()
     host = settings.server + HOST_PATH
@@ -317,6 +332,11 @@ def open_view(context: BrowserContext, settings: Settings, view: str) -> Page:
     if state != 'ready':
         msg = f'{view!r}: {state}'
         raise JobError(msg)
+    try:
+        _refuse_story(page)
+    except (JobError, PlaywrightError):
+        page.close()
+        raise
     return page
 
 
@@ -621,6 +641,9 @@ def add_job_from_flags(
         msg = f'A job named {name!r} already exists in {jobs_file}.'
         raise SystemExit(msg)
     _using_site(settings)
+    with sync_playwright() as pw:
+        page = open_view(browser_session(pw, settings), settings, view)
+        page.close()
     job = Job(name, view, list(args.sheets), settings.name, filters, params)
     append_job(jobs_file, replace(job, filters=resolved_filters(job)))
 

@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, Self, cast
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
 
 import crosstab
 from crosstab import (
@@ -179,6 +180,67 @@ def test_view_from_flag_accepts_a_url_or_a_path() -> None:
         view_from_flag('https://online.tableau.com/#/site/demo/home')
     with pytest.raises(JobError, match='Workbook/View'):
         view_from_flag('Overview')
+
+
+class _LoadedView:
+    def __init__(self, story: bool, closed: list[bool]) -> None:
+        self.story = story
+        self._closed = closed
+
+    def route(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def goto(self, _url: str) -> None:
+        return None
+
+    def wait_for_function(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def evaluate(self, script: str, arg: object = None) -> str | None:
+        if script == '() => window.vizState':
+            return 'ready'
+        if script != crosstab.STORY_JS:
+            msg = f'unexpected {script!r}'
+            raise AssertionError(msg)
+        if self.story:
+            msg = (
+                'Page.evaluate: Error: Stories are not supported; '
+                'use the dashboard inside it.'
+            )
+            raise PlaywrightError(msg)
+        return None
+
+    def close(self) -> None:
+        self._closed.append(True)
+
+
+class _ViewContext:
+    def __init__(self, story: bool, closed: list[bool]) -> None:
+        self.page = _LoadedView(story, closed)
+
+    def new_page(self) -> _LoadedView:
+        return self.page
+
+
+def test_open_view_refuses_a_story_and_allows_a_dashboard(tmp_path: Path) -> None:
+    closed: list[bool] = []
+    settings = Settings(
+        'https://tableau.example',
+        'finance',
+        'tabpull',
+        'demo',
+        tmp_path / 'auth.json',
+        'pat-value',
+    )
+    story = _ViewContext(story=True, closed=closed)
+    with pytest.raises(JobError, match='use the dashboard inside it'):
+        crosstab.open_view(cast('Any', story), settings, 'Book/Story1')
+    assert closed == [True]
+
+    dashboard = _ViewContext(story=False, closed=closed)
+    opened = crosstab.open_view(cast('Any', dashboard), settings, 'Book/Dash')
+    assert opened is dashboard.page
+    assert closed == [True]
 
 
 def test_export_applies_a_blank_filter_to_the_first_sheet_only(

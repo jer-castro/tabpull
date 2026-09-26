@@ -44,7 +44,7 @@ tabpull login                       # refresh SSO for the only site
 tabpull login --site finance        # refresh one site when several are configured
 ```
 
-`add` saves the job and prints the `run` command. It does not export. With `--view` and at least one `--sheet`, `add` writes the job and does not prompt; leave those flags off and it asks. `--filter` is `Field=a|b` or `Field=min..max`, and ` @Sheet` names the worksheet. A filter with no sheet is applied on the first sheet in the job, and tabpull prints that. With one configured site, `--site` can be omitted. With several, pass `--site` or pick one at the prompt.
+`add` saves the job and prints the `run` command. It does not export. With `--view` and at least one `--sheet`, `add` writes the job and does not prompt; leave those flags off and it asks. Flag add still opens the view far enough to refuse a story, with the same message as interactive add: `Stories are not supported; use the dashboard inside it.` `run` refuses a story the same way, before it exports. `--filter` is `Field=a|b` or `Field=min..max`, and ` @Sheet` names the worksheet. A filter with no sheet is applied on the first sheet in the job, and tabpull prints that. With one configured site, `--site` can be omitted. With several, pass `--site` or pick one at the prompt.
 
 `run` keeps going when one job fails and exits non-zero if any did. Each job uses the site it names. When that site's SSO session is missing or expired, tabpull opens the sign-in window if you're at a terminal, and otherwise exits and tells you to run `tabpull login --site <name>`. Crosstab CSVs are rewritten from Tableau's UTF-16 tab-separated format to plain UTF-8 CSV.
 
