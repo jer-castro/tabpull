@@ -1,19 +1,20 @@
 # tabpull verification map
 
-This directory is the maintained source for verifying what a user of `src/crosstab.py` sees. Read this index, then use the matching feature file as the recipe.
+This directory is the maintained source for verifying what a user of `tabpull` sees. Read this index, then use the matching feature file as the recipe.
 
 ## Baseline preconditions
 
 - Repo root is the working directory, and `uv sync` has run.
-- `verify.py doctor` reports `ok` on all three lines.
+- `verify.py doctor` reports `ok` on every settings, session, and jobs line.
 - `RUN=$(date +%Y%m%d-%H%M%S); E=.verify/$RUN`. Every drive uses `--jobs $E/<feature>/jobs.toml --out $E/<feature>/exports`.
-- Never write to the user's `jobs.toml` or `exports/`.
+- Never write to the config-directory jobs file or the data-directory exports folder. The defaults are not the working directory.
 
 ## Driving conventions
 
 - CLI drives are literal commands. Prompts are answered by piped stdin, in prompt order.
-- Pick sheet and field names from `verify.py inspect Workbook/View` output, not from memory.
-- Run `add` drives one at a time, because a PAT sign-in ends other sessions.
+- `<site>` is the local name doctor prints on `settings ok`. Pass `--site <site>` when more than one site is configured.
+- Pick sheet and field names from `verify.py --site <site> inspect Workbook/View` output, not from memory.
+- Run interactive `add` drives one at a time, because a PAT sign-in ends other sessions.
 
 ## Proof and skip reporting
 
@@ -29,5 +30,5 @@ Each feature file has an H1 and one paragraph, then exactly these H2s in order: 
 ## Features
 
 - [Embed export](./run-embed.md) covers dashboard sheet crosstabs, hidden sheets, values filters, date ranges and parameters.
-- [Add a job](./add.md) covers view search by URL or fuzzy name, picking sheets and filters, and saving the job.
-- [SSO session](./login.md) covers session reuse, the expired-session paths, and `login`.
+- [Add a job](./add.md) covers view search by URL or fuzzy name, picking sheets and filters, flag add, and saving the job.
+- [SSO session](./login.md) covers per-site session reuse, the expired-session paths, and `login`.

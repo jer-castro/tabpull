@@ -1,7 +1,7 @@
-"""Setup wizard: walks you through the Tableau values the crosstab exporter needs.
+"""Setup wizard for `tabpull setup`.
 
-Run: uv run src/wizard.py
-Works on macOS, Linux, Windows and WSL. Safe to re-run: Enter keeps current values.
+Asks for a local site name, a dashboard URL, a personal access token, and an SSO sign-in.
+Safe to re-run: Enter keeps the current values for that site.
 """
 
 import ctypes
@@ -12,19 +12,24 @@ import platform
 import shutil
 import sys
 import webbrowser
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 from tableauserverclient.server.endpoint.exceptions import TableauError
 
 from tableau import (
-    AUTH_STATE,
-    ENV_FILE,
     Settings,
+    check_site_name,
+    exports_dir,
     home_url,
+    jobs_path,
     parse_tableau_url,
     read_env_file,
     rest_session,
+    site_auth_path,
+    site_env_path,
     sso_login,
+    upsert_env,
 )
 
 if os.name == 'nt':
@@ -43,9 +48,25 @@ BOLD, DIM, BLUE, GREEN, YELLOW, RESET = (
     else ('',) * 6
 )
 
-_stage_numbers = itertools.count(1)
-_written: list[str] = []
-_skipped: list[str] = []
+
+class _Run:
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.env_path = Path()
+        self.auth_path = Path()
+        self.written: list[str] = []
+        self.skipped: list[str] = []
+        self.stages = itertools.count(1)
+
+    def bind(self, name: str) -> None:
+        self.env_path = site_env_path(name)
+        self.auth_path = site_auth_path(name)
+
+
+_run = _Run()
+TOTAL_STAGES = 3
 
 
 def _clear() -> None:
@@ -56,13 +77,14 @@ def _clear() -> None:
 def banner(title: str) -> None:
     _clear()
     print(
-        f'\n  {BOLD}{title}{RESET}\n  {DIM}{TOTAL_STAGES} stages. Values are saved to {ENV_FILE}.{RESET}\n'
+        f'\n  {BOLD}{title}{RESET}\n'
+        f'  {DIM}{TOTAL_STAGES} stages. Each site keeps its own token and browser session.{RESET}\n'
     )
     pause('Press Enter to start…')
 
 
 def stage(name: str) -> None:
-    number = next(_stage_numbers)
+    number = next(_run.stages)
     _clear()
     print(f'\n  {DIM}Stage {number} of {TOTAL_STAGES}{RESET}  {BOLD}{name}{RESET}\n')
 
@@ -105,49 +127,55 @@ def confirm(question: str, *, default: bool = False) -> bool:
 
 
 def ask(key: str, prompt: str) -> str:
-    """Visible input; on re-runs Enter keeps the value already in .env."""
-    existing = read_env_file().get(key, '')
+    """Visible input; on re-runs Enter keeps the value already saved for this site."""
+    existing = read_env_file(_run.env_path).get(key, '')
     suffix = f' {DIM}[{existing}]{RESET}' if existing else ''
     return input(f'  {prompt}{suffix} ').strip() or existing
 
 
 def ask_secret(key: str, prompt: str) -> str:
-    """Hidden input; on re-runs Enter keeps the value already in .env."""
-    existing = read_env_file().get(key, '')
+    """Hidden input; on re-runs Enter keeps the value already saved for this site."""
+    existing = read_env_file(_run.env_path).get(key, '')
     suffix = ' (Enter keeps the current one)' if existing else ''
     return getpass.getpass(f'  {prompt}{suffix} ').strip() or existing
 
 
 def write_env(key: str, value: str) -> None:
-    """Upsert KEY=VALUE into .env, keeping every other line."""
-    lines = (
-        ENV_FILE.read_text(encoding='utf-8').splitlines() if ENV_FILE.exists() else []
-    )
-    kept = [line for line in lines if line.partition('=')[0].strip() != key]
-    ENV_FILE.write_text('\n'.join([*kept, f'{key}={value}']) + '\n', encoding='utf-8')
-    ENV_FILE.chmod(
-        0o600
-    )  # holds the PAT secret; on Windows this only keeps it writable
-    _written.append(key)
+    """Upsert KEY=VALUE into this site's file, keeping every other line."""
+    upsert_env(_run.env_path, key, value)
+    _run.written.append(key)
 
 
 def finish(next_step: str) -> None:
     _clear()
     print(f'\n  {GREEN}{BOLD}Done.{RESET}\n')
-    for key in dict.fromkeys(_written):
-        print(f'  {GREEN}✓{RESET} {key} → {ENV_FILE}')
-    for item in _skipped:
+    for key in dict.fromkeys(_run.written):
+        print(f'  {GREEN}✓{RESET} {key} → {_run.env_path}')
+    for item in _run.skipped:
         warn(item)
+    note(f'Jobs default to {jobs_path()}.')
+    note(f'Exports default to {exports_dir()}.')
     print(f'\n  Next: {BOLD}{next_step}{RESET}\n')
 
 
-TOTAL_STAGES = 3
+def _prompt_site_name() -> str:
+    note('Jobs refer to this name. Letters, numbers, ".", "_" and "-".')
+    note('The Tableau site content URL is a good name when you have one.')
+    while True:
+        name = input('\n  Site name: ').strip()
+        try:
+            return check_site_name(name)
+        except ValueError as e:
+            warn(str(e))
 
 
-def _site_stage() -> tuple[str, str]:
+def _site_stage(preset: str | None) -> tuple[str, str, str]:
     stage('Tableau site')
-    env = read_env_file()
-    if server := env.get('TABLEAU_SERVER_URL'):
+    name = preset or _prompt_site_name()
+    _run.bind(name)
+    env = read_env_file(_run.env_path)
+    server = env.get('TABLEAU_SERVER_URL', '')
+    if server:
         note(
             f'Current: {server}, site {env.get("TABLEAU_SITE") or "(default)"}. Press Enter to keep it.'
         )
@@ -156,7 +184,7 @@ def _site_stage() -> tuple[str, str]:
     while True:
         url = input('\n  Paste the URL: ').strip()
         if not url and server:
-            return server, env.get('TABLEAU_SITE', '')
+            return name, server.rstrip('/'), env.get('TABLEAU_SITE', '')
         try:
             parsed = parse_tableau_url(url)
         except ValueError as e:
@@ -164,13 +192,14 @@ def _site_stage() -> tuple[str, str]:
             continue
         say(f'Server: {parsed.server}')
         say(f'Site:   {parsed.site or "(default site)"}')
+        say(f'Name:   {name}')
         if confirm('Is that right?', default=True):
             write_env('TABLEAU_SERVER_URL', parsed.server)
             write_env('TABLEAU_SITE', parsed.site)
-            return parsed.server, parsed.site
+            return name, parsed.server, parsed.site
 
 
-def _pat_stage(server: str, site: str) -> Settings:
+def _pat_stage(name: str, server: str, site: str) -> Settings:
     stage('Personal access token')
     say(
         'The token lets the exporter find views and pull published sheets without a browser.'
@@ -185,10 +214,12 @@ def _pat_stage(server: str, site: str) -> Settings:
     while True:
         print()
         settings = Settings(
-            server,
-            site,
-            ask('TABLEAU_PAT_NAME', 'Token name:'),
-            ask_secret('TABLEAU_PAT_SECRET', 'Token secret:'),
+            server=server,
+            site=site,
+            pat_name=ask('TABLEAU_PAT_NAME', 'Token name:'),
+            name=name,
+            auth_path=_run.auth_path,
+            pat_secret=ask_secret('TABLEAU_PAT_SECRET', 'Token secret:'),
         )
         say('Checking the token…')
         try:
@@ -198,8 +229,8 @@ def _pat_stage(server: str, site: str) -> Settings:
             warn(f'Sign-in failed: {e}')
             if confirm('Try again?', default=True):
                 continue
-            _skipped.append(
-                'PAT sign-in failed; saved anyway. Re-run the wizard once it works.'
+            _run.skipped.append(
+                'PAT sign-in failed; saved anyway. Re-run tabpull setup once it works.'
             )
         else:
             say(f'{GREEN}✓ Signed in.{RESET}')
@@ -216,10 +247,12 @@ def _sso_stage(settings: Settings) -> None:
     say(
         'A browser window opens: sign in as usual (SSO, MFA). It closes itself once you are in.'
     )
-    note(f'The session cookies are saved to {AUTH_STATE}. Keep that file private.')
+    note(
+        f'The session cookies are saved to {settings.auth_path}. Keep that file private.'
+    )
     if not confirm('Sign in now?', default=True):
-        _skipped.append(
-            'Skipped SSO sign-in; crosstab.py opens the sign-in window when it needs it.'
+        _run.skipped.append(
+            f'Skipped SSO sign-in. Run: tabpull login --site {settings.name}'
         )
         return
     with sync_playwright() as pw:
@@ -227,13 +260,21 @@ def _sso_stage(settings: Settings) -> None:
     pause()
 
 
-def main() -> None:
+def main(site_name: str | None = None) -> str:
+    if site_name is not None:
+        try:
+            check_site_name(site_name)
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
+    _run.reset()
     banner('tabpull setup')
-    server, site = _site_stage()
-    settings = _pat_stage(server, site)
+    name, server, site = _site_stage(site_name)
+    settings = _pat_stage(name, server, site)
     _sso_stage(settings)
-    finish('uv run src/crosstab.py add')
+    finish(f'tabpull add --site {name}')
+    return name
 
 
 if __name__ == '__main__':
-    main()
+    print('Run: tabpull setup', file=sys.stderr)
+    sys.exit(2)

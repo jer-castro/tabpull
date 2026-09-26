@@ -1,4 +1,9 @@
-"""Tableau settings, PAT sign-in for the REST API, and the SSO browser session."""
+"""Tableau settings, PAT sign-in for the REST API, and the SSO browser session.
+
+Tokens and the jobs file live in the config directory. SSO cookies and exports live in
+the data directory. Those are the XDG base directories when `XDG_CONFIG_HOME` or
+`XDG_DATA_HOME` is set, and the usual OS folders otherwise.
+"""
 
 import os
 import re
@@ -6,7 +11,7 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -14,8 +19,6 @@ import tableauserverclient as tsc
 from playwright.sync_api import Browser, BrowserContext, Playwright
 from playwright.sync_api import Error as PlaywrightError
 
-ENV_FILE = Path('.env')
-AUTH_STATE = Path('.auth/tableau-state.json')
 SETTING_KEYS = (
     'TABLEAU_SERVER_URL',
     'TABLEAU_SITE',
@@ -25,14 +28,94 @@ SETTING_KEYS = (
 LOGIN_TIMEOUT_S = 300
 LOGIN_POLL_MS = 2000
 BROWSER_CHANNELS = ('chrome', 'msedge', None)
+_APP = 'tabpull'
+_SITE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 
 _SITE_RE = re.compile(r'^/+(?:t|site)/([^/?]+)')
 _VIEW_RE = re.compile(r'/views/([^/?]+)/([^/?]+)')
 
 
 class MissingSettingsError(Exception):
-    def __init__(self, keys: list[str]) -> None:
-        super().__init__(f'Missing {", ".join(keys)} in {ENV_FILE}')
+    def __init__(self, keys: list[str], path: Path) -> None:
+        self.keys = keys
+        self.path = path
+        super().__init__(
+            f'Missing {", ".join(keys)} in {path}. Run: tabpull setup --site {path.stem}'
+        )
+
+
+class UnknownSiteError(Exception):
+    pass
+
+
+def check_site_name(name: str) -> str:
+    if _SITE_NAME.fullmatch(name):
+        return name
+    msg = (
+        f'Site name {name!r} should start with a letter or number and contain only '
+        'letters, numbers, ".", "_" and "-".'
+    )
+    raise ValueError(msg)
+
+
+def _windows_dir(env_var: str, fallback: Path) -> Path:
+    value = os.environ.get(env_var)
+    return Path(value) if value else fallback
+
+
+def _rooted(env_var: str, unix_default: Path, windows: Path, mac: Path) -> Path:
+    if override := os.environ.get(env_var):
+        return Path(override) / _APP
+    if sys.platform == 'win32':
+        return windows / _APP
+    if sys.platform == 'darwin':
+        return mac / _APP
+    return unix_default / _APP
+
+
+def config_dir() -> Path:
+    """Site tokens and the jobs file."""
+    return _rooted(
+        'XDG_CONFIG_HOME',
+        Path.home() / '.config',
+        _windows_dir('APPDATA', Path.home() / 'AppData' / 'Roaming'),
+        Path.home() / 'Library' / 'Application Support',
+    )
+
+
+def data_dir() -> Path:
+    """SSO cookies and exports."""
+    return _rooted(
+        'XDG_DATA_HOME',
+        Path.home() / '.local' / 'share',
+        _windows_dir('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'),
+        Path.home() / 'Library' / 'Application Support',
+    )
+
+
+def jobs_path() -> Path:
+    return config_dir() / 'jobs.toml'
+
+
+def exports_dir() -> Path:
+    return data_dir() / 'exports'
+
+
+def site_env_path(name: str) -> Path:
+    return config_dir() / 'sites' / f'{check_site_name(name)}.env'
+
+
+def site_auth_path(name: str) -> Path:
+    return data_dir() / 'auth' / f'{check_site_name(name)}.json'
+
+
+def list_sites() -> list[str]:
+    directory = config_dir() / 'sites'
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path.stem for path in directory.glob('*.env') if _SITE_NAME.fullmatch(path.stem)
+    )
 
 
 def home_url(server: str, site: str) -> str:
@@ -44,7 +127,9 @@ class Settings:
     server: str
     site: str
     pat_name: str
-    pat_secret: str
+    name: str
+    auth_path: Path
+    pat_secret: str = field(repr=False)
 
     @property
     def home_url(self) -> str:
@@ -79,7 +164,7 @@ def parse_tableau_url(url: str) -> TableauUrl:
     )
 
 
-def read_env_file(path: Path = ENV_FILE) -> dict[str, str]:
+def read_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     values = {}
@@ -90,11 +175,39 @@ def read_env_file(path: Path = ENV_FILE) -> dict[str, str]:
     return values
 
 
-def load_settings() -> Settings:
-    """Settings from the environment, falling back to `.env`."""
-    values = read_env_file() | {
-        key: os.environ[key] for key in SETTING_KEYS if key in os.environ
-    }
+def upsert_env(path: Path, key: str, value: str) -> None:
+    """Upsert KEY=VALUE, keeping every other line."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = path.read_text(encoding='utf-8').splitlines() if path.exists() else []
+    kept = [line for line in lines if line.partition('=')[0].strip() != key]
+    path.write_text('\n'.join([*kept, f'{key}={value}']) + '\n', encoding='utf-8')
+    path.chmod(0o600)
+
+
+def save_site(name: str, values: dict[str, str]) -> Path:
+    """Write a site token file. Setup writes the same file one key at a time."""
+    path = site_env_path(name)
+    for key in SETTING_KEYS:
+        if key in values:
+            upsert_env(path, key, values[key])
+    return path
+
+
+def load_site(name: str) -> Settings:
+    """Load one site's token file.
+
+    The working directory and the process environment are not consulted, so each site
+    keeps the token that setup saved for it.
+    """
+    path = site_env_path(name)
+    if not path.is_file():
+        known = ', '.join(list_sites()) or '(none)'
+        msg = (
+            f'No site named {name!r}. Configured sites: {known}. '
+            f'Run: tabpull setup --site {name}'
+        )
+        raise UnknownSiteError(msg)
+    values = read_env_file(path)
     # TABLEAU_SITE is legitimately empty for a Tableau Server default site.
     missing = [
         key
@@ -102,11 +215,13 @@ def load_settings() -> Settings:
         if key not in values or (not values[key] and key != 'TABLEAU_SITE')
     ]
     if missing:
-        raise MissingSettingsError(missing)
+        raise MissingSettingsError(missing, path)
     return Settings(
         server=values['TABLEAU_SERVER_URL'].rstrip('/'),
         site=values['TABLEAU_SITE'],
         pat_name=values['TABLEAU_PAT_NAME'],
+        name=name,
+        auth_path=site_auth_path(name),
         pat_secret=values['TABLEAU_PAT_SECRET'],
     )
 
@@ -163,12 +278,14 @@ def sso_login(pw: Playwright, settings: Settings) -> None:
     """Open a real browser window, wait for the human to finish SSO, then save the cookies."""
     browser = launch_browser(pw, headless=False)
     context = browser.new_context(
-        storage_state=AUTH_STATE if AUTH_STATE.exists() else None, no_viewport=True
+        storage_state=settings.auth_path if settings.auth_path.exists() else None,
+        no_viewport=True,
     )
     page = context.new_page()
     page.goto(settings.home_url)
     print(
-        'Sign in to Tableau in the browser window (SSO, MFA, as usual). It closes by itself once you are in.'
+        f'Sign in to {settings.server}, site {settings.site or "(default)"} '
+        f'(local name {settings.name}). The window closes once you are in.'
     )
     deadline = time.monotonic() + LOGIN_TIMEOUT_S
     try:
@@ -180,23 +297,26 @@ def sso_login(pw: Playwright, settings: Settings) -> None:
     except PlaywrightError as e:
         msg = 'The browser closed before sign-in finished.'
         raise SystemExit(msg) from e
-    AUTH_STATE.parent.mkdir(exist_ok=True)
-    context.storage_state(path=AUTH_STATE)
-    AUTH_STATE.chmod(0o600)
+    settings.auth_path.parent.mkdir(parents=True, exist_ok=True)
+    context.storage_state(path=settings.auth_path)
+    settings.auth_path.chmod(0o600)
     browser.close()
-    print(f'Saved browser session to {AUTH_STATE}')
+    print(f'Saved browser session to {settings.auth_path}')
 
 
 def browser_session(pw: Playwright, settings: Settings) -> BrowserContext:
     """Headless context with a live Tableau session, prompting for SSO when the saved one is missing or expired."""
     browser = launch_browser(pw, headless=True)
-    if AUTH_STATE.exists():
-        context = browser.new_context(storage_state=AUTH_STATE)
+    if settings.auth_path.exists():
+        context = browser.new_context(storage_state=settings.auth_path)
         if session_valid(context, settings):
             return context
         context.close()
     if not sys.stdin.isatty():
-        msg = 'Tableau browser session is missing or expired. Run: uv run src/crosstab.py login'
+        msg = (
+            f'Tableau browser session for site {settings.name!r} is missing or expired. '
+            f'Run: tabpull login --site {settings.name}'
+        )
         raise SystemExit(msg)
     sso_login(pw, settings)
-    return browser.new_context(storage_state=AUTH_STATE)
+    return browser.new_context(storage_state=settings.auth_path)
