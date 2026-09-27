@@ -5,19 +5,22 @@ from typing import Any, Self, cast
 import pytest
 from playwright.sync_api import Error as PlaywrightError
 
-from tabpull import crosstab
-from tabpull.crosstab import (
+from tabpull import add, embed
+from tabpull.add import match_score, view_from_flag
+from tabpull.embed import normalize_csv
+from tabpull.filters import (
+    filters_for_run,
+    normalize_range_bound,
+    parse_filter_spec,
+    resolved_filters,
+)
+from tabpull.jobs import (
     Job,
     JobError,
     RangeFilter,
     ValuesFilter,
     job_to_toml,
-    match_score,
-    normalize_csv,
-    parse_filter_spec,
     parse_job,
-    resolved_filters,
-    view_from_flag,
 )
 from tabpull.tableau import Settings, parse_tableau_url
 
@@ -97,7 +100,7 @@ def test_jobs_round_trip_through_toml() -> None:
 def test_match_score_finds_views_by_words_and_typos(query: str, matches: bool) -> None:
     text = 'Sales Dashboard SalesWorkbook/sheets/Overview'
 
-    assert (match_score(query, text) >= crosstab.MIN_MATCH_SCORE) is matches
+    assert (match_score(query, text) >= add.MIN_MATCH_SCORE) is matches
 
 
 def test_filter_without_a_sheet_stays_blank_until_resolved(
@@ -212,7 +215,7 @@ class _LoadedView:
     def evaluate(self, script: str, arg: object = None) -> str | None:
         if script == '() => window.vizState':
             return 'ready'
-        if script != crosstab.STORY_JS:
+        if script != embed.STORY_JS:
             msg = f'unexpected {script!r}'
             raise AssertionError(msg)
         if self.story:
@@ -247,11 +250,11 @@ def test_open_view_refuses_a_story_and_allows_a_dashboard(tmp_path: Path) -> Non
     )
     story = _ViewContext(story=True, closed=closed)
     with pytest.raises(JobError, match='use the dashboard inside it'):
-        crosstab.open_view(cast('Any', story), settings, 'Book/Story1')
+        embed.open_view(cast('Any', story), settings, 'Book/Story1')
     assert closed == [True]
 
     dashboard = _ViewContext(story=False, closed=closed)
-    opened = crosstab.open_view(cast('Any', dashboard), settings, 'Book/Dash')
+    opened = embed.open_view(cast('Any', dashboard), settings, 'Book/Dash')
     assert opened is dashboard.page
     assert closed == [True]
 
@@ -278,7 +281,7 @@ def test_export_applies_a_blank_filter_to_the_first_sheet_only(
 
     class Page:
         def evaluate(self, script: str, arg: object = None) -> None:
-            if script == crosstab.APPLY_JS:
+            if script == embed.APPLY_JS:
                 seen['apply'] = arg
 
         def expect_download(self, timeout: int) -> Expect:
@@ -287,7 +290,7 @@ def test_export_applies_a_blank_filter_to_the_first_sheet_only(
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(crosstab, 'open_view', lambda *_args, **_kwargs: Page())
+    monkeypatch.setattr(embed, 'open_view', lambda *_args, **_kwargs: Page())
     job = Job(
         'west',
         'W/V',
@@ -296,7 +299,7 @@ def test_export_applies_a_blank_filter_to_the_first_sheet_only(
         [ValuesFilter('Region', ['West']), ValuesFilter('Year', ['2024'], 'Second')],
     )
 
-    paths = crosstab.export_embed(
+    paths = embed.export_embed(
         cast('Any', object()),
         Settings(
             'https://tableau.example',
@@ -354,7 +357,7 @@ def test_parse_job_rejects_invalid_jobs(raw: dict[str, object]) -> None:
 def test_normalize_range_bound_accepts_absolute_dates_and_numbers(
     raw: str | None, expected: str | None
 ) -> None:
-    assert crosstab.normalize_range_bound(raw) == expected
+    assert normalize_range_bound(raw) == expected
 
 
 @pytest.mark.parametrize(
@@ -362,7 +365,7 @@ def test_normalize_range_bound_accepts_absolute_dates_and_numbers(
 )
 def test_normalize_range_bound_rejects_an_impossible_date(bound: str) -> None:
     with pytest.raises(JobError, match='not a real date') as exc:
-        crosstab.normalize_range_bound(bound)
+        normalize_range_bound(bound)
 
     assert 'YYYY-MM-DD or M/D/YYYY' in str(exc.value)
     assert '2024-03-02' not in str(exc.value)
@@ -376,7 +379,7 @@ def test_normalize_range_bound_refuses_a_relative_or_runtime_date(bound: str) ->
     with pytest.raises(
         JobError, match='relative date or a date computed at run time'
     ) as exc:
-        crosstab.normalize_range_bound(bound)
+        normalize_range_bound(bound)
 
     assert 'YYYY-MM-DD or M/D/YYYY' in str(exc.value)
 
@@ -401,7 +404,7 @@ def test_export_rejects_a_bad_bound_before_opening_the_view(
         msg = 'opened Tableau'
         raise AssertionError(msg)
 
-    monkeypatch.setattr(crosstab, 'open_view', opened)
+    monkeypatch.setattr(embed, 'open_view', opened)
     settings = Settings(
         'https://tableau.example',
         'finance',
@@ -422,30 +425,30 @@ def test_export_rejects_a_bad_bound_before_opening_the_view(
             [RangeFilter('Order Date', 'A', bound, '2024-03-01')],
         )
         with pytest.raises(JobError, match=match):
-            crosstab.export_embed(cast('Any', object()), settings, job, tmp_path)
+            embed.export_embed(cast('Any', object()), settings, job, tmp_path)
 
 
 def test_story_refusal_comes_from_one_message() -> None:
-    assert crosstab.STORY_REFUSAL == (
+    assert embed.STORY_REFUSAL == (
         'Stories are not supported; use the dashboard inside it.'
     )
-    guard = crosstab._STORY_GUARD_JS
+    guard = embed._STORY_GUARD_JS
     assert guard.count("sheetType === 'story'") == 1
-    assert crosstab.STORY_REFUSAL in guard
-    assert crosstab.STORY_JS.count(guard) == 1
-    assert crosstab.INSPECT_JS.count(guard) == 1
-    assert "sheetType === 'story'" not in crosstab.STORY_JS.replace(guard, '', 1)
-    assert "sheetType === 'story'" not in crosstab.INSPECT_JS.replace(guard, '', 1)
+    assert embed.STORY_REFUSAL in guard
+    assert embed.STORY_JS.count(guard) == 1
+    assert embed.INSPECT_JS.count(guard) == 1
+    assert "sheetType === 'story'" not in embed.STORY_JS.replace(guard, '', 1)
+    assert "sheetType === 'story'" not in embed.INSPECT_JS.replace(guard, '', 1)
 
 
 def test_filter_payload_leaves_an_omitted_bound_unset() -> None:
-    payload = crosstab.filter_payload(
+    payload = embed.filter_payload(
         RangeFilter('Order Date', 'Totals', '1/3/2024', None)
     )
 
     assert payload['min'] == '2024-01-03'
     assert payload['max'] is None
-    assert crosstab.filter_payload(
+    assert embed.filter_payload(
         RangeFilter('Order Date', 'Totals', None, '2/1/2024')
     ) == {
         'field': 'Order Date',
@@ -469,7 +472,7 @@ def test_jobs_file_range_with_a_blank_bound_leaves_that_end_open() -> None:
         )['job'][0]
     )
 
-    assert crosstab.filter_payload(job.filters[0])['min'] is None
+    assert embed.filter_payload(job.filters[0])['min'] is None
 
 
 @pytest.mark.parametrize(
@@ -521,7 +524,7 @@ def test_filters_for_run_replaces_the_same_field_and_sheet(
         ],
     )
 
-    updated = crosstab.filters_for_run(
+    updated = filters_for_run(
         job,
         [
             parse_filter_spec('Order Date=2026-10-01..'),
@@ -555,12 +558,10 @@ def test_filters_for_run_matches_a_blank_sheet_on_the_first_sheet(
         [RangeFilter('Order Date', '', '2020-01-01', '2020-02-01')],
     )
 
-    replaced = crosstab.filters_for_run(
+    replaced = filters_for_run(
         job, [parse_filter_spec('Order Date=2024-01-01..2024-01-31 @A')]
     )
-    added = crosstab.filters_for_run(
-        job, [parse_filter_spec('Order Date=2024-01-01.. @B')]
-    )
+    added = filters_for_run(job, [parse_filter_spec('Order Date=2024-01-01.. @B')])
 
     assert replaced.filters == [
         RangeFilter('Order Date', 'A', '2024-01-01', '2024-01-31')
@@ -587,12 +588,8 @@ def test_filters_for_run_without_a_sheet_replaces_the_field_on_every_sheet(
         ],
     )
 
-    everywhere = crosstab.filters_for_run(
-        job, [parse_filter_spec('Order Date=2026-09-01..')]
-    )
-    only_map = crosstab.filters_for_run(
-        job, [parse_filter_spec('Order Date=..2026-09-25 @Map')]
-    )
+    everywhere = filters_for_run(job, [parse_filter_spec('Order Date=2026-09-01..')])
+    only_map = filters_for_run(job, [parse_filter_spec('Order Date=..2026-09-25 @Map')])
 
     assert everywhere.filters == [
         RangeFilter('Order Date', 'Detail', '2026-09-01', None),

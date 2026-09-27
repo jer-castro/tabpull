@@ -15,6 +15,6 @@ def main() -> None:
         print(version())
         return
     # Deferred so `tabpull --version` skips loading Playwright and the REST client.
-    from tabpull.crosstab import cli  # noqa: PLC0415
+    from tabpull.app import cli  # noqa: PLC0415
 
     cli()

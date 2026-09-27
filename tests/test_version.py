@@ -5,17 +5,17 @@ import pytest
 from tabpull import cli
 
 
-def test_version_flag_answers_without_loading_crosstab(
+def test_version_flag_answers_without_loading_app(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.delitem(sys.modules, 'tabpull.crosstab', raising=False)
+    monkeypatch.delitem(sys.modules, 'tabpull.app', raising=False)
     monkeypatch.setattr(sys, 'argv', ['tabpull', '--version'])
     cli.main()
     assert capsys.readouterr().out == f'{cli.version()}\n'
-    assert 'tabpull.crosstab' not in sys.modules
+    assert 'tabpull.app' not in sys.modules
 
 
-def test_other_args_reach_crosstab(
+def test_other_args_reach_app(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(sys, 'argv', ['tabpull', '--help'])

@@ -1,0 +1,155 @@
+"""Filters: the Field=... spec syntax, range-bound dates, and which sheet a filter applies on."""
+
+import re
+from collections.abc import Sequence
+from dataclasses import replace
+from datetime import date
+
+from tabpull.jobs import Job, JobError, RangeFilter, ValuesFilter
+
+# Tableau's range-filter API only accepts a Date or a number. M/D/YYYY is what the
+# dashboard shows for a date filter; YYYY-MM-DD is what the embedding call converts.
+# Anything else on a range bound is a relative date or a date computed at run time.
+_US_DATE = re.compile(r'^(\d{1,2})/(\d{1,2})/(\d{4})$')
+_ISO_DATE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})$')
+_NUMBER = re.compile(r'^-?\d+(\.\d+)?$')
+
+
+def resolved_filters(job: Job) -> list[ValuesFilter | RangeFilter]:
+    """Apply a filter that names no sheet on the first sheet, and say so.
+
+    The filter is not copied onto the other sheets. A sheet named on the filter is left alone.
+    """
+    if not job.sheets:
+        msg = f'job {job.name!r}: needs at least one sheet'
+        raise JobError(msg)
+    default = job.sheets[0]
+    resolved: list[ValuesFilter | RangeFilter] = []
+    for item in job.filters:
+        if item.sheet:
+            resolved.append(item)
+            continue
+        _note_default_sheet(job, item.field, default)
+        resolved.append(replace(item, sheet=default))
+    return resolved
+
+
+def _note_default_sheet(job: Job, field_name: str, sheet: str) -> None:
+    print(
+        f'  {job.name}: filter {field_name!r} names no sheet; '
+        f'applying it on {sheet!r}, the first sheet in the job.'
+    )
+
+
+def _overrides(
+    item: ValuesFilter | RangeFilter,
+    existing: ValuesFilter | RangeFilter,
+    default_sheet: str,
+) -> bool:
+    return existing.field == item.field and (
+        not item.sheet or (existing.sheet or default_sheet) == item.sheet
+    )
+
+
+def filters_for_run(job: Job, overrides: Sequence[ValuesFilter | RangeFilter]) -> Job:
+    if not overrides:
+        return job
+    default = job.sheets[0]
+    filters: list[ValuesFilter | RangeFilter] = list(job.filters)
+    for item in overrides:
+        if any(_overrides(item, existing, default) for existing in filters):
+            filters = [
+                replace(item, sheet=item.sheet or existing.sheet)
+                if _overrides(item, existing, default)
+                else existing
+                for existing in filters
+            ]
+            continue
+        if not item.sheet:
+            _note_default_sheet(job, item.field, default)
+        filters.append(replace(item, sheet=item.sheet or default))
+    return replace(job, filters=filters)
+
+
+def _calendar_day(year: int, month: int, day: int, original: str) -> date:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        msg = f'{original!r} is not a real date; use YYYY-MM-DD or M/D/YYYY'
+        raise JobError(msg) from None
+
+
+def normalize_range_bound(value: str | None) -> str | None:
+    """Turn an `M/D/YYYY` range bound into `YYYY-MM-DD`.
+
+    A blank bound is open and a number passes through. An impossible calendar day
+    is rejected. Any other text is a relative date or a date computed at run time.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if _NUMBER.fullmatch(text):
+        return text
+    us = _US_DATE.fullmatch(text)
+    if us is not None:
+        month, day, year = (int(part) for part in us.groups())
+        return _calendar_day(year, month, day, value).isoformat()
+    iso = _ISO_DATE.fullmatch(text)
+    if iso is not None:
+        year, month, day = (int(part) for part in iso.groups())
+        return _calendar_day(year, month, day, value).isoformat()
+    msg = (
+        f'{value!r} is a relative date or a date computed at run time; '
+        'use YYYY-MM-DD or M/D/YYYY'
+    )
+    raise JobError(msg)
+
+
+def accept_range_bound(value: str | None) -> str | None:
+    """Keep the bound the user typed when it is safe to apply later."""
+    normalize_range_bound(value)
+    return value
+
+
+def split_values(value: str) -> list[str]:
+    return [v.strip() for v in value.split('|')]
+
+
+def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
+    body, sep, sheet = spec.rpartition(' @')
+    if not sep:
+        body, sheet = spec, ''
+    field_name, eq, value = body.partition('=')
+    field_name = field_name.strip()
+    sheet = sheet.strip()
+    if not eq or not field_name:
+        msg = (
+            f'filter {spec!r} should look like Field=a|b or Field=min..max, '
+            'with an optional " @Sheet"'
+        )
+        raise JobError(msg)
+    if '..' in value:
+        low, _, high = value.partition('..')
+        if not low.strip() and not high.strip():
+            msg = (
+                f'filter {spec!r} should look like Field=a|b or Field=min..max, '
+                'with an optional " @Sheet"'
+            )
+            raise JobError(msg)
+        return RangeFilter(
+            field_name,
+            sheet,
+            accept_range_bound(low.strip() or None),
+            accept_range_bound(high.strip() or None),
+        )
+    return ValuesFilter(field_name, split_values(value), sheet)
+
+
+def parse_param_spec(spec: str) -> tuple[str, str]:
+    key, sep, value = spec.partition('=')
+    if not sep or not key.strip():
+        msg = f'param {spec!r} should look like Name=value'
+        raise JobError(msg)
+    return key.strip(), value.strip()
