@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480" role="img" aria-labelledby="title desc">
-  <title id="title">tabpull: crosstab any sheet, skip the workbook</title>
-  <desc id="desc">A published Tableau dashboard with an Order Detail worksheet inside it that has no published view of its own. That dashboard-only sheet slides out of the dashboard and becomes a CSV file, with no workbook download.</desc>
+  <title id="title">tabpull</title>
+  <desc id="desc">A published dashboard (Sales / Overview), the Order Detail worksheet inside it labeled dashboard-only sheet, and the UTF-8 file Order_Detail.csv.</desc>
 
   <defs>
     <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
@@ -102,6 +102,5 @@
 
     <!-- type band -->
     <text x="64" y="428" font-size="40" font-weight="800" letter-spacing="-0.035em" fill="#1f2a2e">tabpull</text>
-    <text x="236" y="426" font-size="20" font-weight="500" fill="#4c483f">Crosstab any sheet. Skip the workbook.</text>
   </g>
 </svg>
