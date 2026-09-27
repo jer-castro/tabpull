@@ -24,38 +24,38 @@
       <text x="420" y="30" font-size="12" fill="#8c8576" text-anchor="end">published view</text>
       <path d="M0 46H440" stroke="#ece6da"/>
 
-      <rect x="20" y="62" width="192" height="104" rx="6" fill="#f7f4ee"/>
+      <rect x="20" y="62" width="192" height="92" rx="6" fill="#f7f4ee"/>
       <g fill="#2c6e63">
-        <rect x="36" y="118" width="20" height="32" rx="2"/>
-        <rect x="64" y="100" width="20" height="50" rx="2"/>
-        <rect x="92" y="108" width="20" height="42" rx="2"/>
-        <rect x="120" y="84" width="20" height="66" rx="2"/>
-        <rect x="148" y="94" width="20" height="56" rx="2"/>
-        <rect x="176" y="78" width="20" height="72" rx="2"/>
+        <rect x="36" y="112" width="20" height="28" rx="2"/>
+        <rect x="64" y="96" width="20" height="44" rx="2"/>
+        <rect x="92" y="103" width="20" height="37" rx="2"/>
+        <rect x="120" y="81" width="20" height="59" rx="2"/>
+        <rect x="148" y="90" width="20" height="50" rx="2"/>
+        <rect x="176" y="76" width="20" height="64" rx="2"/>
       </g>
 
-      <rect x="228" y="62" width="192" height="104" rx="6" fill="#f7f4ee"/>
-      <path d="M244 142L276 124L308 132L340 102L372 110L404 82" fill="none" stroke="#2c6e63" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-      <circle cx="404" cy="82" r="4.5" fill="#2c6e63"/>
+      <rect x="228" y="62" width="192" height="92" rx="6" fill="#f7f4ee"/>
+      <path d="M244 136L276 118L308 126L340 96L372 104L404 76" fill="none" stroke="#2c6e63" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="404" cy="76" r="4.5" fill="#2c6e63"/>
 
-      <rect x="20" y="182" width="400" height="102" rx="6" fill="#fbe9e1" stroke="#e0592f" stroke-width="1.5"/>
-      <text x="404" y="206" font-size="11" font-weight="700" fill="#e0592f" text-anchor="end">Order Detail</text>
+      <rect x="20" y="170" width="400" height="114" rx="6" fill="#fbe9e1" stroke="#e0592f" stroke-width="1.5"/>
+      <text x="404" y="194" font-size="11" font-weight="700" fill="#e0592f" text-anchor="end">Order Detail</text>
       <g fill="#2c6e63">
-        <rect x="104" y="200" width="216" height="12" rx="2"/>
-        <rect x="104" y="222" width="164" height="12" rx="2" fill-opacity=".75"/>
-        <rect x="104" y="244" width="124" height="12" rx="2" fill-opacity=".55"/>
-        <rect x="104" y="266" width="78" height="12" rx="2" fill-opacity=".35"/>
+        <rect x="104" y="188" width="216" height="12" rx="2"/>
+        <rect x="104" y="210" width="164" height="12" rx="2" fill-opacity=".75"/>
+        <rect x="104" y="232" width="124" height="12" rx="2" fill-opacity=".55"/>
+        <rect x="104" y="254" width="78" height="12" rx="2" fill-opacity=".35"/>
       </g>
       <g font-size="11" fill="#6f6859">
-        <text x="36" y="210">West</text>
-        <text x="36" y="232">East</text>
-        <text x="36" y="254">Central</text>
-        <text x="36" y="276">South</text>
+        <text x="36" y="198">West</text>
+        <text x="36" y="220">East</text>
+        <text x="36" y="242">Central</text>
+        <text x="36" y="264">South</text>
       </g>
     </g>
 
     <!-- the pulled sheet -->
-    <path d="M484 297C532 297 548 262 590 262" fill="none" stroke="#e0592f" stroke-width="1.5" stroke-dasharray="4 5" stroke-linecap="round"/>
+    <path d="M484 291C532 291 548 262 590 262" fill="none" stroke="#e0592f" stroke-width="1.5" stroke-dasharray="4 5" stroke-linecap="round"/>
     <g transform="translate(596 90)">
       <rect x="0" y="0" width="136" height="36" rx="8" fill="#e0592f"/>
       <text x="16" y="19" font-size="13" font-weight="700" fill="#ffffff">Order Detail</text>
@@ -104,6 +104,5 @@
     <!-- type band -->
     <text x="64" y="428" font-size="40" font-weight="800" letter-spacing="-0.035em" fill="#1f2a2e">tabpull</text>
     <text x="236" y="426" font-size="20" font-weight="500" fill="#4c483f">Crosstab any sheet. Skip the workbook.</text>
-    <text x="1216" y="426" font-size="13" font-weight="600" fill="#e0592f" text-anchor="end" letter-spacing=".04em">dashboard-only sheets included</text>
   </g>
 </svg>
