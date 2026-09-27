@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480" role="img" aria-labelledby="title desc">
   <title id="title">tabpull: crosstab any sheet, skip the workbook</title>
-  <desc id="desc">A Tableau dashboard with a hidden worksheet tucked behind it. The hidden sheet slides out and becomes a CSV file, with no workbook download.</desc>
+  <desc id="desc">A published Tableau dashboard with an Order Detail worksheet inside it that has no published view of its own. That dashboard-only sheet slides out of the dashboard and becomes a CSV file, with no workbook download.</desc>
 
   <defs>
     <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
@@ -17,14 +17,11 @@
 
   <g font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
 
-    <!-- hidden sheet, still tucked behind the dashboard -->
-    <rect x="360" y="44" width="176" height="120" rx="8" fill="#fbe9e1" stroke="#e0592f" stroke-width="1.5" stroke-dasharray="5 5"/>
-
     <!-- dashboard -->
     <g transform="translate(64 64)">
       <rect width="440" height="304" rx="10" fill="#ffffff" stroke="#d8d1c3"/>
       <text x="20" y="30" font-size="13" font-weight="600" fill="#1f2a2e">Sales / Overview</text>
-      <text x="420" y="30" font-size="12" fill="#8c8576" text-anchor="end">dashboard</text>
+      <text x="420" y="30" font-size="12" fill="#8c8576" text-anchor="end">published view</text>
       <path d="M0 46H440" stroke="#ece6da"/>
 
       <rect x="20" y="62" width="192" height="104" rx="6" fill="#f7f4ee"/>
@@ -41,12 +38,13 @@
       <path d="M244 142L276 124L308 132L340 102L372 110L404 82" fill="none" stroke="#2c6e63" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
       <circle cx="404" cy="82" r="4.5" fill="#2c6e63"/>
 
-      <rect x="20" y="182" width="400" height="102" rx="6" fill="#f7f4ee"/>
+      <rect x="20" y="182" width="400" height="102" rx="6" fill="#fbe9e1" stroke="#e0592f" stroke-width="1.5"/>
+      <text x="404" y="206" font-size="11" font-weight="700" fill="#e0592f" text-anchor="end">Order Detail</text>
       <g fill="#2c6e63">
-        <rect x="104" y="200" width="264" height="12" rx="2"/>
-        <rect x="104" y="222" width="196" height="12" rx="2" fill-opacity=".75"/>
-        <rect x="104" y="244" width="148" height="12" rx="2" fill-opacity=".55"/>
-        <rect x="104" y="266" width="92" height="12" rx="2" fill-opacity=".35"/>
+        <rect x="104" y="200" width="216" height="12" rx="2"/>
+        <rect x="104" y="222" width="164" height="12" rx="2" fill-opacity=".75"/>
+        <rect x="104" y="244" width="124" height="12" rx="2" fill-opacity=".55"/>
+        <rect x="104" y="266" width="78" height="12" rx="2" fill-opacity=".35"/>
       </g>
       <g font-size="11" fill="#6f6859">
         <text x="36" y="210">West</text>
@@ -57,7 +55,7 @@
     </g>
 
     <!-- the pulled sheet -->
-    <path d="M536 150C560 170 566 190 588 200" fill="none" stroke="#e0592f" stroke-width="1.5" stroke-dasharray="4 5" stroke-linecap="round"/>
+    <path d="M484 297C532 297 548 262 590 262" fill="none" stroke="#e0592f" stroke-width="1.5" stroke-dasharray="4 5" stroke-linecap="round"/>
     <g transform="translate(596 90)">
       <rect x="0" y="0" width="136" height="36" rx="8" fill="#e0592f"/>
       <text x="16" y="19" font-size="13" font-weight="700" fill="#ffffff">Order Detail</text>
@@ -79,8 +77,8 @@
         <rect x="18" y="169" width="58" height="8" rx="2"/><rect x="110" y="169" width="44" height="8" rx="2"/><rect x="190" y="169" width="50" height="8" rx="2"/>
         <rect x="18" y="203" width="58" height="8" rx="2"/><rect x="110" y="203" width="36" height="8" rx="2"/><rect x="190" y="203" width="30" height="8" rx="2"/>
       </g>
-      <rect x="176" y="6" width="80" height="22" rx="11" fill="#1f2a2e"/>
-      <text x="216" y="21" font-size="10.5" font-weight="700" fill="#f4f0e8" text-anchor="middle" letter-spacing=".08em">HIDDEN</text>
+      <text x="0" y="274" font-size="13" font-weight="700" fill="#e0592f">dashboard-only sheet</text>
+      <text x="0" y="294" font-size="12" fill="#8c8576">not a published view</text>
     </g>
 
     <path d="M880 216H956" fill="none" stroke="#e0592f" stroke-width="2" stroke-linecap="round" marker-end="url(#head)"/>
@@ -106,6 +104,6 @@
     <!-- type band -->
     <text x="64" y="428" font-size="40" font-weight="800" letter-spacing="-0.035em" fill="#1f2a2e">tabpull</text>
     <text x="236" y="426" font-size="20" font-weight="500" fill="#4c483f">Crosstab any sheet. Skip the workbook.</text>
-    <text x="1216" y="426" font-size="13" font-weight="600" fill="#e0592f" text-anchor="end" letter-spacing=".04em">hidden sheets included</text>
+    <text x="1216" y="426" font-size="13" font-weight="600" fill="#e0592f" text-anchor="end" letter-spacing=".04em">dashboard-only sheets included</text>
   </g>
 </svg>
