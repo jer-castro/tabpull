@@ -1,7 +1,8 @@
 from collections.abc import Callable
+from typing import ClassVar
 
 from textual.app import ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -35,12 +36,7 @@ Form, ConfirmScreen { align: center middle; }
 
 
 class Form[T](ModalScreen[T | None]):
-    """Modal that builds a value, hands it to `commit`, and closes on success.
-
-    `commit` raises JobError to keep the form open with the message shown.
-    """
-
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding('escape', 'cancel', 'cancel'),
         Binding('ctrl+s', 'submit', 'save'),
     ]
@@ -219,15 +215,16 @@ class FilterForm(Form[ValuesFilter | RangeFilter]):
         return make_filter(field_name, sheet, values=self.text('values'))
 
 
-class ConfirmScreen(ModalScreen[bool]):
-    BINDINGS = [
-        Binding('y', 'answer(True)', 'yes'),
-        Binding('n,escape', 'answer(False)', 'no'),
+class ConfirmScreen(ModalScreen[None]):
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding('y', 'yes', 'yes'),
+        Binding('n,escape', 'no', 'no'),
     ]
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, on_yes: Callable[[], None]) -> None:
         super().__init__()
         self.message = message
+        self.on_yes = on_yes
 
     def compose(self) -> ComposeResult:
         with Vertical(id='form'):
@@ -237,7 +234,14 @@ class ConfirmScreen(ModalScreen[bool]):
                 yield Button('No (n)', id='no')
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == 'yes')
+        if event.button.id == 'yes':
+            self.action_yes()
+        else:
+            self.action_no()
 
-    def action_answer(self, answer: bool) -> None:
-        self.dismiss(answer)
+    def action_yes(self) -> None:
+        self.dismiss()
+        self.on_yes()
+
+    def action_no(self) -> None:
+        self.dismiss()

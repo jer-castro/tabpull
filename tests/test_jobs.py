@@ -1,5 +1,5 @@
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -20,13 +20,16 @@ from tabpull.jobs import (
 )
 
 
-def _job(name: str, **kwargs: Any) -> Job:  # noqa: ANN401
-    fields: dict[str, Any] = {
-        'view': 'Sales/Overview',
-        'sheets': ['A', 'B'],
-        'site': 'finance',
-    }
-    return Job(name, **fields | kwargs)
+def _job(
+    name: str,
+    *,
+    sheets: Sequence[str] = ('A', 'B'),
+    filters: Sequence[ValuesFilter | RangeFilter] = (),
+    params: dict[str, str] | None = None,
+) -> Job:
+    return Job(
+        name, 'Sales/Overview', list(sheets), 'finance', list(filters), params or {}
+    )
 
 
 def _write(path: Path, *jobs: Job) -> None:

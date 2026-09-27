@@ -1,7 +1,9 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
+from textual.pilot import Pilot
 from textual.widgets import DataTable, Input, RadioButton, Static, TextArea
 
 from tabpull import tableau
@@ -31,17 +33,19 @@ def jobs_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return path
 
 
-def _drive(jobs_file: Path, steps: object) -> None:
+def _drive(
+    jobs_file: Path, steps: Callable[[TabpullApp, Pilot[None]], Awaitable[None]]
+) -> None:
     async def go() -> None:
         tui = TabpullApp(jobs_file, jobs_file.parent / 'out')
         async with tui.run_test(size=(140, 45)) as pilot:
-            await steps(tui, pilot)  # ty: ignore[call-non-callable]
+            await steps(tui, pilot)
 
     asyncio.run(go())
 
 
 def test_home_lists_jobs_and_edits_a_filter_param_and_name(jobs_file: Path) -> None:
-    async def steps(tui: TabpullApp, pilot) -> None:  # noqa: ANN001
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
         assert isinstance(tui.screen, HomeScreen)
         assert tui.screen.query_one('#jobs', DataTable).row_count == 2
 
@@ -119,7 +123,7 @@ def test_job_screen_changes_view_and_site_with_cli_validation(
         },
     )
 
-    async def steps(tui: TabpullApp, pilot) -> None:  # noqa: ANN001
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
         await pilot.press('enter', 'v')
         field = tui.screen.query_one('#value', Input)
         field.value = 'NoSlash'
@@ -154,7 +158,7 @@ def test_home_runs_marked_jobs_and_removes_after_confirm(
 
     monkeypatch.setattr(TabpullApp, 'shell', shell)
 
-    async def steps(tui: TabpullApp, pilot) -> None:  # noqa: ANN001
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
         await pilot.press('r')
         assert calls == [('run', '--', 'daily')]
         assert 'FAILED' in tui.last_run

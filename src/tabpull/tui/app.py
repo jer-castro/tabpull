@@ -5,12 +5,12 @@ import tomllib
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, override
 
 from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Label, Static
 
@@ -81,7 +81,7 @@ def _save_error(e: Exception) -> JobError:
 class HomeScreen(Screen[None]):
     app: 'TabpullApp'
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding('enter', 'open', 'open', priority=True),
         Binding('space', 'mark', 'mark'),
         Binding('r', 'run', 'run'),
@@ -97,6 +97,7 @@ class HomeScreen(Screen[None]):
         self.jobs: list[Job] = []
         self.marked: set[str] = set()
 
+    @override
     def compose(self) -> ComposeResult:
         yield Label('Sites', classes='section')
         yield DataTable(id='sites', cursor_type='none')
@@ -198,9 +199,7 @@ class HomeScreen(Screen[None]):
         if not names:
             return
 
-        def confirmed(yes: bool | None) -> None:
-            if not yes:
-                return
+        def remove() -> None:
             try:
                 delete_jobs(self.app.jobs_file, names)
             except (JobError, tomllib.TOMLDecodeError, OSError) as e:
@@ -211,7 +210,7 @@ class HomeScreen(Screen[None]):
             self.reload()
 
         self.app.push_screen(
-            ConfirmScreen(f'Remove {", ".join(names)} from the jobs file?'), confirmed
+            ConfirmScreen(f'Remove {", ".join(names)} from the jobs file?', remove)
         )
 
     def action_add(self) -> None:
@@ -233,7 +232,7 @@ class HomeScreen(Screen[None]):
 class JobScreen(Screen[None]):
     app: 'TabpullApp'
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding('escape', 'back', 'back'),
         Binding('enter,e', 'edit', 'edit', priority=True),
         Binding('n', 'new', 'new'),
@@ -249,6 +248,7 @@ class JobScreen(Screen[None]):
         super().__init__()
         self.job = job
 
+    @override
     def compose(self) -> ComposeResult:
         yield Static('', id='summary', classes='info')
         yield Label('Filters  (n new, e/enter edit, d delete)', classes='section')
@@ -372,15 +372,13 @@ class JobScreen(Screen[None]):
                 self.job, params={k: v for k, v in self.job.params.items() if k != key}
             )
 
-        def confirmed(yes: bool | None) -> None:
-            if not yes:
-                return
+        def delete() -> None:
             try:
                 self.commit(new)
             except JobError as e:
                 self.notify(str(e), severity='error')
 
-        self.app.push_screen(ConfirmScreen(f'Delete {label}?'), confirmed)
+        self.app.push_screen(ConfirmScreen(f'Delete {label}?', delete))
 
     def action_sheets(self) -> None:
         self.app.push_screen(
@@ -434,7 +432,7 @@ class JobScreen(Screen[None]):
 class TabpullApp(App[None]):
     TITLE = 'tabpull'
     CSS = CSS
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding('q', 'quit', 'quit'),
         Binding('question_mark', 'help', 'help'),
     ]
@@ -455,16 +453,12 @@ class TabpullApp(App[None]):
             self.action_show_help_panel()
 
     def shell(self, *argv: str) -> int:
-        """Leave the full screen, run a tabpull subcommand in the terminal, come back.
-
-        A child process, because Playwright's sync API refuses to start inside
-        Textual's running asyncio loop.
-        """
+        """Playwright's sync API refuses to start inside Textual's asyncio loop."""
         files = ['--jobs', str(self.jobs_file), '--out', str(self.out_dir)]
         with self.suspend():
             print(f'\n$ {shlex.join(["tabpull", *argv])}', flush=True)
             try:
-                code = subprocess.run(  # noqa: S603 - argv is our own subcommand
+                code = subprocess.run(  # noqa: S603
                     [sys.executable, '-m', 'tabpull', *files, *argv], check=False
                 ).returncode
             except KeyboardInterrupt:
