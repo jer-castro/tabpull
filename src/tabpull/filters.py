@@ -63,6 +63,12 @@ def filters_for_run(job: Job, overrides: Sequence[ValuesFilter | RangeFilter]) -
     return replace(job, filters=filters)
 
 
+def params_for_run(job: Job, overrides: Sequence[tuple[str, str]]) -> Job:
+    if not overrides:
+        return job
+    return replace(job, params={**job.params, **dict(overrides)})
+
+
 def _calendar_day(year: int, month: int, day: int, original: str) -> date:
     try:
         return date(year, month, day)
