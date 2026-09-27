@@ -1,0 +1,6 @@
+# Canonical checks for the no-mistakes gate and GitHub CI.
+# These are the develop commands from the README, with ruff format in
+# check mode so a formatting drift fails instead of being rewritten.
+commands:
+  lint: "uv run ruff check && uv run ruff format --check && uv run ty check"
+  test: "uv run pytest"
