@@ -11,8 +11,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import tableauserverclient as tsc
-from playwright.sync_api import Browser, BrowserContext, Playwright
+from playwright.sync_api import Browser, BrowserContext, Page, Playwright
 from playwright.sync_api import Error as PlaywrightError
+
+from tabpull import ui
 
 SETTING_KEYS = (
     'TABLEAU_SERVER_URL',
@@ -271,6 +273,19 @@ def session_valid(context: BrowserContext, settings: Settings) -> bool:
     return response.ok
 
 
+def _wait_for_sign_in(page: Page, context: BrowserContext, settings: Settings) -> bool:
+    # ponytail: cancel is polled between waits, not mid-request. A stuck page waits out LOGIN_POLL_MS.
+    deadline = time.monotonic() + LOGIN_TIMEOUT_S
+    while not session_valid(context, settings):
+        if ui.stopped():
+            return True
+        if time.monotonic() > deadline:
+            msg = f'Gave up waiting for sign-in after {LOGIN_TIMEOUT_S}s.'
+            raise SystemExit(msg)
+        page.wait_for_timeout(LOGIN_POLL_MS)
+    return False
+
+
 def sso_login(pw: Playwright, settings: Settings) -> None:
     browser = launch_browser(pw, headless=False)
     context = browser.new_context(
@@ -279,25 +294,25 @@ def sso_login(pw: Playwright, settings: Settings) -> None:
     )
     page = context.new_page()
     page.goto(settings.home_url)
-    print(
+    ui.emit(
         f'Sign in to {settings.server}, site {settings.site or "(default)"} '
         f'(local name {settings.name}). The window closes once you are in.'
     )
-    deadline = time.monotonic() + LOGIN_TIMEOUT_S
     try:
-        while not session_valid(context, settings):
-            if time.monotonic() > deadline:
-                msg = f'Gave up waiting for sign-in after {LOGIN_TIMEOUT_S}s.'
-                raise SystemExit(msg)
-            page.wait_for_timeout(LOGIN_POLL_MS)
+        cancelled = _wait_for_sign_in(page, context, settings)
     except PlaywrightError as e:
+        browser.close()
         msg = 'The browser closed before sign-in finished.'
         raise SystemExit(msg) from e
+    if cancelled:
+        browser.close()
+        msg = 'Sign-in cancelled.'
+        raise SystemExit(msg)
     settings.auth_path.parent.mkdir(parents=True, exist_ok=True)
     context.storage_state(path=settings.auth_path)
     settings.auth_path.chmod(0o600)
     browser.close()
-    print(f'Saved browser session to {settings.auth_path}')
+    ui.emit(f'Saved browser session to {settings.auth_path}')
 
 
 def browser_session(pw: Playwright, settings: Settings) -> BrowserContext:

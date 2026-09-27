@@ -45,7 +45,7 @@ MIN_MATCH_SCORE = 0.75
 _WORD_RE = re.compile(r'[^\W_]+')
 
 
-def _view_path(item: tsc.ViewItem) -> str:
+def view_path(item: tsc.ViewItem) -> str:
     return (item.content_url or '').replace('/sheets/', '/', 1)
 
 
@@ -60,7 +60,7 @@ def match_score(query: str, text: str) -> float:
     )
 
 
-class _ListedFilter(TypedDict):
+class ListedFilter(TypedDict):
     field: str
     sheet: str
     type: str
@@ -93,25 +93,30 @@ def _prompt_bound(message: str, default: str) -> str | None:
     return bound
 
 
-def _find_view(settings: Settings) -> tsc.ViewItem:
-    query = _prompt_text('View URL or part of a workbook/view name').strip()
-    with ui.console.status('Searching views…'), rest_session(settings) as server:
+def search_views(settings: Settings, query: str) -> list[tsc.ViewItem]:
+    query = query.strip()
+    with rest_session(settings) as server:
         options = tsc.RequestOptions(pagesize=1000)
         options.fields |= {'_default_', 'sheetType'}
         views = list(tsc.Pager(server.views, options))
     target = parse_tableau_url(query).view if query.startswith('http') else None
     if target:
-        matches = [item for item in views if _view_path(item) == target]
-    else:
-        scored = [
-            (match_score(query, f'{item.name} {item.content_url}'), item)
-            for item in views
-        ]
-        scored.sort(key=lambda pair: -pair[0])
-        matches = [item for score, item in scored if score >= MIN_MATCH_SCORE]
+        return [item for item in views if view_path(item) == target]
+    scored = [
+        (match_score(query, f'{item.name} {item.content_url}'), item) for item in views
+    ]
+    scored.sort(key=lambda pair: -pair[0])
+    return [item for score, item in scored if score >= MIN_MATCH_SCORE]
+
+
+def _find_view(settings: Settings) -> tsc.ViewItem:
+    query = _prompt_text('View URL or part of a workbook/view name').strip()
+    with ui.console.status('Searching views…'):
+        matches = search_views(settings, query)
     if not matches:
         msg = f'No views you can access match {query!r}.'
         raise SystemExit(msg)
+    target = parse_tableau_url(query).view if query.startswith('http') else None
     if target and len(matches) == 1:
         return matches[0]
     if len(matches) > MAX_SEARCH_RESULTS:
@@ -141,9 +146,29 @@ def _find_view(settings: Settings) -> tsc.ViewItem:
     )
 
 
+def listed_filters(
+    sheets: list[SheetInfo], chosen: Sequence[str]
+) -> list[ListedFilter]:
+    picked_names = set(chosen)
+    listed: list[ListedFilter] = []
+    for sheet in sheets:
+        if sheet['name'] not in picked_names:
+            continue
+        listed.extend(
+            {
+                'field': item['field'],
+                'sheet': sheet['name'],
+                'type': item['type'],
+                'current': item['current'],
+            }
+            for item in sheet['filters']
+        )
+    return listed
+
+
 def _print_fields(
     sheets: list[SheetInfo], chosen: Sequence[str], params: list[dict[str, str]]
-) -> list[_ListedFilter]:
+) -> list[ListedFilter]:
     table = Table(
         title='Filters & parameters on these sheets',
         box=box.ROUNDED,
@@ -151,29 +176,28 @@ def _print_fields(
     )
     for column in ('kind', 'name', 'type', 'sheet', 'current'):
         table.add_column(column)
-    picked_names = set(chosen)
-    listed: list[_ListedFilter] = []
-    for sheet in sheets:
-        if sheet['name'] not in picked_names:
-            continue
-        for item in sheet['filters']:
-            row: _ListedFilter = {
-                'field': item['field'],
-                'sheet': sheet['name'],
-                'type': item['type'],
-                'current': item['current'],
-            }
-            listed.append(row)
-            table.add_row(
-                'filter', row['field'], row['type'], row['sheet'], row['current']
-            )
+    listed = listed_filters(sheets, chosen)
+    for row in listed:
+        table.add_row('filter', row['field'], row['type'], row['sheet'], row['current'])
     for param in params:
         table.add_row('param', param['name'], '', '', param['current'])
     ui.console.print(table)
     return listed
 
 
-def _prompt_filters(listed: list[_ListedFilter]) -> list[ValuesFilter | RangeFilter]:
+def filter_defaults(raw: ListedFilter) -> ValuesFilter | RangeFilter:
+    if raw['type'] == 'range':
+        low, sep, high = raw['current'].partition(' .. ')
+        if not sep:
+            low = high = ''
+        return RangeFilter(raw['field'], raw['sheet'], low, high)
+    current = '' if raw['current'] == '(All)' else raw['current']
+    return ValuesFilter(
+        raw['field'], split_values(current) if current else [], raw['sheet']
+    )
+
+
+def _prompt_filters(listed: list[ListedFilter]) -> list[ValuesFilter | RangeFilter]:
     filters: list[ValuesFilter | RangeFilter] = []
     if not listed:
         return filters
@@ -189,21 +213,18 @@ def _prompt_filters(listed: list[_ListedFilter]) -> list[ValuesFilter | RangeFil
         )
         if item == 'Done':
             return filters
-        field_name, sheet = item['field'], item['sheet']
-        if item['type'] == 'range':
-            low, sep, high = item['current'].partition(' .. ')
-            if not sep:
-                low = high = ''
+        draft = filter_defaults(item)
+        field_name, sheet = draft.field, draft.sheet
+        if isinstance(draft, RangeFilter):
             while True:
-                start = _prompt_bound(f'{field_name} from', low)
-                end = _prompt_bound(f'{field_name} to', high)
+                start = _prompt_bound(f'{field_name} from', draft.min or '')
+                end = _prompt_bound(f'{field_name} to', draft.max or '')
                 if start or end:
                     break
                 ui.console.print('Give a from, a to, or both.')
             filters.append(RangeFilter(field_name, sheet, start, end))
         else:
-            default = '' if item['current'] == '(All)' else item['current']
-            values = _prompt_text(f'{field_name} values (a|b)', default=default)
+            values = _prompt_text(f'{field_name} values (a|b)', default=draft.pick_list)
             filters.append(ValuesFilter(field_name, split_values(values), sheet))
 
 
@@ -223,13 +244,20 @@ def _prompt_params(params: list[dict[str, str]]) -> dict[str, str]:
         chosen[param['name']] = _prompt_text(param['name'], default=param['current'])
 
 
+def read_view(context: BrowserContext, settings: Settings, view: str) -> ViewInfo:
+    page = open_view(context, settings, view)
+    try:
+        info: ViewInfo = page.evaluate(INSPECT_JS)
+    finally:
+        page.close()
+    return info
+
+
 def _build_embed_job(
     context: BrowserContext, settings: Settings, name: str, view: str
 ) -> Job:
     with ui.console.status(f'Opening {view} in headless browser…'):
-        page = open_view(context, settings, view)
-        info: ViewInfo = page.evaluate(INSPECT_JS)
-        page.close()
+        info = read_view(context, settings, view)
     chosen: list[str] = ui.ask(
         questionary.checkbox(
             'Sheets to crosstab',
@@ -258,12 +286,14 @@ def _using_site(settings: Settings) -> None:
     ui.console.print(f'[dim]{escape(detail)}[/]', soft_wrap=True)
 
 
-def append_job(path: Path, job: Job) -> None:
+def append_job(path: Path, job: Job, *, quiet: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = job_to_toml(job)
     prefix = '\n' if path.exists() and path.stat().st_size else ''
     with path.open('a', encoding='utf-8') as handle:
         handle.write(prefix + text)
+    if quiet:
+        return
     if not ui.rich_output():
         print(f'\nSaved job {job.name!r} to {path}:\n\n{text}')
         print(f'Run it: tabpull run {job.name}')
@@ -295,7 +325,7 @@ def append_job(path: Path, job: Job) -> None:
 def add_job(settings: Settings, jobs_path: Path, name: str | None = None) -> None:
     _using_site(settings)
     item = _find_view(settings)
-    view = _view_path(item)
+    view = view_path(item)
     existing = {job.name for job in load_jobs(jobs_path)}
     default_name = slug(item.name or view)
     if name is None:

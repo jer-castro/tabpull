@@ -1,5 +1,8 @@
 import os
 import sys
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,38 @@ STYLE = questionary.Style(
         ('answer', 'fg:#d1dedc bold'),
     ]
 )
+
+_sink: ContextVar[Callable[[str], None] | None] = ContextVar(
+    'tabpull_sink', default=None
+)
+_stop: ContextVar[Callable[[], bool] | None] = ContextVar('tabpull_stop', default=None)
+
+
+def emit(text: str) -> None:
+    sink = _sink.get()
+    if sink is None:
+        print(text)
+        return
+    sink(text)
+
+
+def stopped() -> bool:
+    stop = _stop.get()
+    return bool(stop and stop())
+
+
+@contextmanager
+def capture(
+    sink: Callable[[str], None], stop: Callable[[], bool] | None = None
+) -> Iterator[None]:
+    """Send emit() lines to sink in this thread, and let stopped() see stop."""
+    sink_token = _sink.set(sink)
+    stop_token = _stop.set(stop)
+    try:
+        yield
+    finally:
+        _sink.reset(sink_token)
+        _stop.reset(stop_token)
 
 
 def rich_output() -> bool:

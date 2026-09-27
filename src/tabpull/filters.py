@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date
 
+from tabpull import ui
 from tabpull.jobs import Job, JobError, RangeFilter, ValuesFilter
 
 # Tableau's range-filter API only accepts a Date or a number.
@@ -27,7 +28,7 @@ def resolved_filters(job: Job) -> list[ValuesFilter | RangeFilter]:
 
 
 def _note_default_sheet(job: Job, field_name: str, sheet: str) -> None:
-    print(
+    ui.emit(
         f'  {job.name}: filter {field_name!r} names no sheet; '
         f'applying it on {sheet!r}, the first sheet in the job.'
     )

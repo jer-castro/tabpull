@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
 from pathlib import Path
+from typing import Protocol
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Playwright, sync_playwright
@@ -128,7 +129,16 @@ class _TTYRun:
             ui.console.print(f'  [dim]rerun failed:[/] [bold]{escape(rerun)}[/]\n')
 
 
-type Report = _PlainRun | _TTYRun
+class Report(Protocol):
+    def live(self) -> AbstractContextManager[object]: ...
+
+    def sheet(self, job: Job, done: int, sheet: str) -> None: ...
+
+    def ok(self, job: Job, paths: Sequence[Path]) -> None: ...
+
+    def fail(self, job: Job, message: str) -> None: ...
+
+    def summary(self, ok: int, total: int, rerun: str | None) -> None: ...
 
 
 def open_report(jobs: Sequence[Job], out_dir: Path) -> Report:
@@ -152,7 +162,7 @@ def _export_group(
         settings = load_site(site_name)
     except (UnknownSiteError, MissingSettingsError, ValueError) as e:
         return _fail_all(site_jobs, str(e), report)
-    print(
+    ui.emit(
         f'  site {settings.name}: {settings.server}, site {settings.site or "(default)"}'
     )
     try:
@@ -164,6 +174,10 @@ def _export_group(
         return _fail_all(site_jobs, message, report)
     failed: list[str] = []
     for job in site_jobs:
+        if ui.stopped():
+            failed.append(job.name)
+            report.fail(job, 'Cancelled.')
+            continue
         try:
             paths = export_embed(
                 context,
@@ -190,7 +204,11 @@ def run_jobs(jobs: Sequence[Job], out_dir: Path, report: Report) -> list[str]:
     failed: list[str] = []
     if not groups:
         return failed
+    # ponytail: cancel is checked between jobs, not mid-export. Close the browser to stop a stuck sheet.
     with report.live(), sync_playwright() as pw:
         for site_name, site_jobs in groups:
+            if ui.stopped():
+                failed += _fail_all(site_jobs, 'Cancelled.', report)
+                continue
             failed += _export_group(pw, site_name, site_jobs, out_dir, report)
     return failed
