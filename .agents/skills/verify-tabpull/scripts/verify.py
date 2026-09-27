@@ -164,7 +164,10 @@ def _date_problems(results: list[dict[str, Any]], sent: dict[str, Any]) -> list[
     for side, asked_day, key in (('min', asked[0], 'min'), ('max', asked[1], 'max')):
         if asked_day is not None:
             continue
-        ends = {_bound_day(result['applied'][key]) for result in results}
+        ends: set[str] = set()
+        for result in results:
+            day = _bound_day(result['applied'][key])
+            ends.add('null' if day is None else day)
         if len(ends) > 1:
             problems.append(f'open {side} differs between timezones: {sorted(ends)}')
     if len({result['csv_sha256'] for result in results}) > 1:
