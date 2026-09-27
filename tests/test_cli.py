@@ -459,6 +459,55 @@ def test_prompted_add_keeps_the_sheet_on_each_filter(
     ]
 
 
+def test_prompted_add_asks_again_when_both_range_bounds_are_blank(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    order_date = {
+        'field': 'Order Date',
+        'sheet': 'A Title Sheet',
+        'type': 'range',
+        'current': '',
+    }
+    _scripted_ask(
+        monkeypatch,
+        [['A Title Sheet'], order_date, '', ' ', '', '2/1/2024', 'Done'],
+    )
+
+    class Page:
+        def evaluate(self, script: str, arg: object = None) -> dict[str, object]:
+            return {
+                'sheets': [
+                    {
+                        'name': 'A Title Sheet',
+                        'filters': [
+                            {'field': 'Order Date', 'type': 'range', 'current': ''},
+                        ],
+                    }
+                ],
+                'params': [],
+            }
+
+        def close(self) -> None:
+            return None
+
+    class Item:
+        name = 'Dashboard 1'
+        content_url = 'CrosstabMe/sheets/Dashboard1'
+
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr(crosstab, 'open_view', lambda *_a, **_k: Page())
+    monkeypatch.setattr(crosstab, '_find_view', lambda _settings: Item())
+
+    crosstab.add_job(_settings('demo', tmp_path), jobs, name='prompted')
+
+    assert 'Give a from, a to, or both.' in capsys.readouterr().out
+    assert crosstab.load_jobs(jobs)[0].filters == [
+        crosstab.RangeFilter('Order Date', 'A Title Sheet', None, '2/1/2024'),
+    ]
+
+
 def test_prompted_add_refuses_a_relative_range_before_saving(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -196,11 +196,6 @@ class RangeFilter:
     min: str | None = None
     max: str | None = None
 
-    def __post_init__(self) -> None:
-        if not (self.min or '').strip() and not (self.max or '').strip():
-            msg = f'range filter {self.field!r} needs a min, a max, or both'
-            raise JobError(msg)
-
 
 @dataclass(frozen=True)
 class Job:
@@ -234,6 +229,17 @@ def _parse_filter(raw: object) -> ValuesFilter | RangeFilter:
         raise JobError(msg)
     raw = dict(raw)
     raw['sheet'] = str(raw.get('sheet') or '').strip()
+    if 'values' not in raw:
+        bounds = [raw.get('min'), raw.get('max')]
+        if any(bound is not None and not isinstance(bound, str) for bound in bounds):
+            msg = (
+                f'range filter {raw.get("field")!r}: quote min and max, '
+                'as in min = "2024-01-01"'
+            )
+            raise JobError(msg)
+        if not any((bound or '').strip() for bound in bounds):
+            msg = f'range filter {raw.get("field")!r} needs a min, a max, or both'
+            raise JobError(msg)
     try:
         return ValuesFilter(**raw) if 'values' in raw else RangeFilter(**raw)
     except TypeError as e:
@@ -823,14 +829,13 @@ def _prompt_filters(listed: list[_ListedFilter]) -> list[ValuesFilter | RangeFil
         field_name, sheet = item['field'], item['sheet']
         if item['type'] == 'range':
             low, high = _range_ends(item['current'])
-            filters.append(
-                RangeFilter(
-                    field_name,
-                    sheet,
-                    _prompt_bound(f'{field_name} from', low),
-                    _prompt_bound(f'{field_name} to', high),
-                )
-            )
+            while True:
+                start = _prompt_bound(f'{field_name} from', low)
+                end = _prompt_bound(f'{field_name} to', high)
+                if start or end:
+                    break
+                ui.console.print('Give a from, a to, or both.')
+            filters.append(RangeFilter(field_name, sheet, start, end))
         else:
             default = '' if item['current'] == '(All)' else item['current']
             values = _prompt_text(f'{field_name} values (a|b)', default=default)

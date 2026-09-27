@@ -492,6 +492,21 @@ def test_jobs_file_rejects_a_range_with_no_bounds(bounds: str) -> None:
         parse_job(raw)
 
 
+@pytest.mark.parametrize('bound', ['min = 2024-01-01', 'max = 5'])
+def test_jobs_file_asks_to_quote_an_unquoted_range_bound(bound: str) -> None:
+    jobs = f"""
+        [[job]]
+        name = "daily"
+        site = "demo"
+        view = "W/V"
+        sheets = ["Totals"]
+        filters = [{{ field = "Order Date", sheet = "Totals", {bound} }}]
+        """
+
+    with pytest.raises(JobError, match=r"'daily'.*quote min and max"):
+        parse_job(tomllib.loads(jobs)['job'][0])
+
+
 def test_filters_for_run_replaces_the_same_field_and_sheet(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
