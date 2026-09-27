@@ -1,13 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480" role="img" aria-labelledby="title desc">
   <title id="title">tabpull: crosstab any sheet, skip the workbook</title>
-  <desc id="desc">The card is a Tableau-style highlight table titled Order Detail, a hidden sheet, with regions as rows and months as columns. tabpull exports sheets like this as crosstab CSV without downloading the workbook.</desc>
+  <desc id="desc">The card is a Tableau-style highlight table titled Order Detail, a dashboard-only sheet with no published view of its own, with regions as rows and months as columns. tabpull exports sheets like this as crosstab CSV without downloading the workbook.</desc>
 
   <rect width="1280" height="480" rx="14" fill="#fbfbf8"/>
   <rect x="0.5" y="0.5" width="1279" height="479" rx="13.5" fill="none" stroke="#1d2330" stroke-opacity=".14"/>
 
   <g font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
     <text x="62" y="104" font-size="52" font-weight="800" letter-spacing="-0.04em" fill="#1d2330">tabpull</text>
-    <text x="64" y="138" font-size="15" fill="#5b6470">Order Detail <tspan fill="#482878" font-weight="700">· hidden sheet</tspan></text>
+    <text x="64" y="138" font-size="15" fill="#5b6470">Order Detail <tspan fill="#482878" font-weight="700">· dashboard-only sheet</tspan></text>
 
     <text x="1216" y="92" font-size="22" font-weight="600" fill="#1d2330" text-anchor="end">Crosstab any sheet. Skip the workbook.</text>
     <text x="1216" y="122" font-size="14" fill="#5b6470" text-anchor="end">Download &#8594; Crosstab &#8594; CSV, from the command line.</text>
