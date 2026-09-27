@@ -28,6 +28,8 @@ from tabpull.tableau import (
     MissingSettingsError,
     UnknownSiteError,
     browser_session,
+    cancelled,
+    close_on_stop,
     load_site,
 )
 
@@ -168,13 +170,15 @@ def _export_group(
     try:
         context = browser_session(pw, settings)
     except SystemExit as e:
+        if cancelled():
+            return _fail_all(site_jobs, 'Cancelled.', report)
         message = (
             e.code if isinstance(e.code, str) else 'could not open a browser session'
         )
         return _fail_all(site_jobs, message, report)
     failed: list[str] = []
     for job in site_jobs:
-        if ui.stopped():
+        if cancelled():
             failed.append(job.name)
             report.fail(job, 'Cancelled.')
             continue
@@ -186,9 +190,13 @@ def _export_group(
                 out_dir,
                 on_sheet=partial(report.sheet, job),
             )
-        except (JobError, PlaywrightError, OSError, UnicodeError, csv.Error) as e:
+        except Exception as e:
+            if not cancelled() and not isinstance(
+                e, (JobError, PlaywrightError, OSError, UnicodeError, csv.Error)
+            ):
+                raise
             failed.append(job.name)
-            report.fail(job, str(e))
+            report.fail(job, 'Cancelled.' if cancelled() else str(e))
         else:
             report.ok(job, paths)
     return failed
@@ -204,10 +212,9 @@ def run_jobs(jobs: Sequence[Job], out_dir: Path, report: Report) -> list[str]:
     failed: list[str] = []
     if not groups:
         return failed
-    # ponytail: cancel is checked between jobs, not mid-export. Close the browser to stop a stuck sheet.
-    with report.live(), sync_playwright() as pw:
+    with report.live(), sync_playwright() as pw, close_on_stop(pw):
         for site_name, site_jobs in groups:
-            if ui.stopped():
+            if cancelled():
                 failed += _fail_all(site_jobs, 'Cancelled.', report)
                 continue
             failed += _export_group(pw, site_name, site_jobs, out_dir, report)

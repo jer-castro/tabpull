@@ -3,6 +3,7 @@ import os
 import subprocess  # noqa: S404
 import sys
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from pathlib import Path
@@ -12,12 +13,13 @@ if TYPE_CHECKING:
     from playwright.sync_api import Playwright
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
 from textual.pilot import Pilot
 from textual.widget import Widget
 from textual.widgets import Checkbox, DataTable, Input, RadioButton, Static, TextArea
 
 import tabpull.tui.app as tui_app
-from tabpull import tableau, ui
+from tabpull import embed, tableau, ui
 from tabpull.jobs import Job, RangeFilter, ValuesFilter, load_jobs, save_jobs
 from tabpull.run import Report
 from tabpull.tui.app import HomeScreen, JobScreen, TabpullApp
@@ -569,6 +571,191 @@ def test_sso_login_stops_when_cancelled(
         tableau.sso_login(cast('Playwright', object()), settings)
     assert closed == [True]
     assert not settings.auth_path.exists()
+
+
+class _PidPlaywright:
+    def __init__(self, pid: int) -> None:
+        proc = type('_Proc', (), {'pid': pid})()
+        transport = type('_Transport', (), {'_proc': proc})()
+        connection = type('_Connection', (), {'_transport': transport})()
+        self._impl_obj = type('_Impl', (), {'_connection': connection})()
+
+    def __enter__(self) -> object:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+def _sleeper() -> subprocess.Popen[bytes]:
+    return subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+
+
+def test_cancel_during_sign_in_request_does_not_wait_it_out(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _site()
+    settings = tableau.load_site('demo')
+    proc = _sleeper()
+    entered = threading.Event()
+    stop = {'on': False}
+
+    class Request:
+        def post(self, *_args: object, **_kwargs: object) -> object:
+            entered.set()
+            proc.wait()
+            msg = 'Connection closed while reading from the driver'
+            raise PlaywrightError(msg)
+
+    class Page:
+        def goto(self, _url: str) -> None:
+            return None
+
+        def wait_for_timeout(self, _ms: int) -> None:
+            msg = 'should stop during the request, not after it'
+            raise AssertionError(msg)
+
+    class Context:
+        request = Request()
+
+        def new_page(self) -> Page:
+            return Page()
+
+        def cookies(self, _server: str) -> list[dict[str, str]]:
+            return [{'name': 'XSRF-TOKEN', 'value': 'token'}]
+
+    class Browser:
+        def new_context(self, **_kwargs: object) -> Context:
+            return Context()
+
+        def close(self) -> None:
+            return None
+
+    def flip() -> None:
+        assert entered.wait(5)
+        stop['on'] = True
+
+    monkeypatch.setattr(tableau, 'launch_browser', lambda *_a, **_k: Browser())
+    threading.Thread(target=flip, daemon=True).start()
+    started = time.monotonic()
+    try:
+        with (
+            ui.capture(lambda _line: None, lambda: stop['on']),
+            pytest.raises(SystemExit, match='cancelled'),
+        ):
+            tableau.sso_login(cast('Playwright', _PidPlaywright(proc.pid)), settings)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+
+    assert time.monotonic() - started < 3
+    assert proc.poll() is not None
+    assert not settings.auth_path.exists()
+
+
+def test_ctrl_c_stops_sign_in_during_the_poll(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = _notes(monkeypatch)
+    _site()
+    proc = _sleeper()
+    entered = threading.Event()
+
+    class Page:
+        def goto(self, _url: str) -> None:
+            return None
+
+        def wait_for_timeout(self, _ms: int) -> None:
+            entered.set()
+            proc.wait()
+            msg = 'Connection closed while reading from the driver'
+            raise PlaywrightError(msg)
+
+    class Context:
+        def new_page(self) -> Page:
+            return Page()
+
+        def cookies(self, _server: str) -> list[object]:
+            return []
+
+    class Browser:
+        def new_context(self, **_kwargs: object) -> Context:
+            return Context()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(tableau, 'launch_browser', lambda *_a, **_k: Browser())
+    monkeypatch.setattr(
+        'tabpull.tui.forms.sync_playwright', lambda: _PidPlaywright(proc.pid)
+    )
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('l')
+        await _until(pilot, entered.is_set)
+        await pilot.press('ctrl+c')
+        await _until(pilot, lambda: isinstance(tui.screen, HomeScreen))
+
+    try:
+        _drive(jobs_file, steps)
+        assert proc.wait(timeout=2) is not None or proc.poll() is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+    assert any('cancel' in note.lower() for note in notes)
+
+
+def test_escape_stops_the_sheet_being_exported(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _site('finance')
+    proc = _sleeper()
+    entered = threading.Event()
+
+    class Page:
+        def evaluate(self, script: str, _arg: object = None) -> None:
+            if script == embed.EXPORT_JS:
+                entered.set()
+                proc.wait()
+                msg = 'Connection closed while reading from the driver'
+                raise PlaywrightError(msg)
+
+        def expect_download(self, timeout: int) -> object:
+            class Expect:
+                def __enter__(self) -> object:
+                    return self
+
+                def __exit__(self, *_args: object) -> None:
+                    return None
+
+            return Expect()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr('tabpull.run.sync_playwright', lambda: _PidPlaywright(proc.pid))
+    monkeypatch.setattr('tabpull.run.browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr('tabpull.embed.open_view', lambda *_a, **_k: Page())
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('r')
+        await _until(pilot, entered.is_set)
+        await pilot.press('escape')
+        await _until(
+            pilot,
+            lambda: isinstance(tui.screen, HomeScreen) and 'cancelled' in tui.last_run,
+        )
+        assert not (jobs_file.parent / 'out' / 'daily' / 'Totals.csv').exists()
+
+    try:
+        _drive(jobs_file, steps)
+        assert proc.wait(timeout=2) is not None or proc.poll() is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
 
 
 def test_setup_blank_fields_keep_the_saved_site(
