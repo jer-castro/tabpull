@@ -13,7 +13,8 @@
 </p>
 
 <p align="center">
-  <a href="#why">Why</a> ·
+  <a href="#what-it-automates">What it automates</a> ·
+  <a href="#why-not-the-rest-api">Why not the REST API</a> ·
   <a href="#install">Install</a> ·
   <a href="#setup">Setup</a> ·
   <a href="#use">Use</a> ·
@@ -24,11 +25,18 @@
 
 ---
 
-## Why
+## What it automates
 
-The REST crosstab/data endpoints only export the first sheet when the view is a dashboard, and a worksheet that lives only inside a published dashboard (often called a hidden sheet) is not published as its own view, so it has no REST view at all.
+tabpull is one command, `tabpull`, for the export you'd otherwise click through in Tableau: open a published dashboard, set the filters and parameters you'd set by hand, then Download → Crosstab → CSV.
 
-tabpull does the hand path from the command line: open the dashboard, set filters, then Download → Crosstab → CSV. That includes dashboard-only sheets and ones that aren't first alphabetically, and it works on sites where you're allowed to crosstab but not to download the workbook.
+- **Any named worksheet in the dashboard.** That includes sheets that only exist inside the dashboard and aren't published as their own views, and sheets that aren't first alphabetically.
+- **Saved jobs.** `tabpull add` records the view, sheets, filters, and parameters as a job. `tabpull run` exports it later, one UTF-8 CSV per sheet.
+- **Several sites.** `tabpull setup` configures each Tableau server or site once, and each job names the site it uses.
+- **No workbook download.** It works on sites where you're allowed to crosstab but not to download the workbook.
+
+## Why not the REST API
+
+The REST crosstab/data endpoints only export the first sheet when the view is a dashboard. A worksheet that lives only inside a published dashboard (often called a hidden sheet) is not published as its own view, so it has no REST view at all.
 
 Dashboard sheets go through the Tableau Embedding API (`exportCrosstabAsync`) in a headless browser signed in with your SSO session. The PAT is still used to find views.
 
