@@ -1,5 +1,6 @@
 import importlib.metadata
 import io
+import re
 import runpy
 import shlex
 import sys
@@ -1276,7 +1277,8 @@ def test_setup_writes_each_site_under_xdg(
     assert wizard.main('finance') == 'finance'
     assert wizard.main('finance') == 'finance'
     assert wizard.main('ops') == 'ops'
-    text = capsys.readouterr().out
+    # Rich restyles a path in the middle, so the jobs file is not one raw substring.
+    text = re.sub(r'\x1b\[[0-9;]*m', '', capsys.readouterr().out)
     finance = tableau.load_site('finance')
     ops = tableau.load_site('ops')
 
