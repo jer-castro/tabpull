@@ -8,8 +8,7 @@
 </p>
 
 <p align="center">
-  <strong>Crosstab any sheet. Skip the workbook.</strong><br />
-  Dashboard-only sheets included. Embedding API with your SSO session; a PAT finds the views.
+  Dashboard-only sheets are included. tabpull uses the Embedding API with your SSO session, and a personal access token finds the views.
 </p>
 
 <p align="center">
@@ -43,10 +42,10 @@ Dashboard sheets go through the Tableau Embedding API (`exportCrosstabAsync`) in
 ## Install
 
 ```sh
-uv tool install tabpull
+uv tool install git+https://github.com/jer-castro/tabpull
 ```
 
-That installs one `tabpull` command. `setup`, `add`, `run`, and `login` are subcommands.
+That installs one `tabpull` command. `setup`, `add`, `run`, and `login` are subcommands. Pin a tag with `@vX.Y.Z` on that URL, and upgrade with `uv tool upgrade tabpull`.
 
 ## Setup
 
@@ -59,7 +58,7 @@ The wizard asks for that name (unless you passed `--site`), a dashboard URL, and
 
 Run it again for another Tableau server or site. Each site keeps its own token and browser session. Re-running a name keeps the current values when you press Enter.
 
-The browser is your installed Chrome, then Edge. If neither is installed, run `uvx --from tabpull playwright install chromium`. tabpull does not download a browser while Chrome or Edge is already there.
+The browser is your installed Chrome, then Edge. If neither is installed, tabpull prints `uvx playwright==<version> install chromium` for the Playwright version it has. tabpull does not download a browser while Chrome or Edge is already there.
 
 ## Use
 
@@ -84,7 +83,7 @@ tabpull --version
 
 `add` saves the job and prints the `run` command. It does not export. With `--view` and at least one `--sheet`, `add` writes the job and does not prompt. Leave those flags off and it asks.
 
-Flag `add` still opens the view far enough to refuse a story, with the same message as interactive add: `Stories are not supported; use the dashboard inside it.` `run` refuses a story the same way, before it exports.
+`add` with `--view` and `--sheet` still opens the view far enough to refuse a story, with the same message as interactive add: `Stories are not supported; use the dashboard inside it.` `run` refuses a story the same way, before it exports.
 
 `--filter` is `Field=a|b` or `Field=min..max`, and ` @Sheet` names the worksheet. Either side of a range may be omitted, but not both: `Field=min..` runs from that date through the latest value the filter allows, and `Field=..max` runs from the earliest value through that date. An open side needs a range filter on that field in the workbook, since tabpull reads its endpoint from there. A filter with no sheet is applied on the first sheet in the job, and tabpull prints that. With one configured site, `--site` can be omitted. With several, pass `--site` or pick one at the prompt.
 
@@ -145,7 +144,7 @@ filters = [
 params = { "Top N" = "25" }
 ```
 
-Parameters are set first, then filters, in the same order you'd set them in the dashboard. A filter applies on `sheet`. When `sheet` is omitted, tabpull applies that filter on the first entry in `sheets` and prints a line saying so. It does not copy the filter onto every sheet. Other sheets change only the way that same filter changes them in the dashboard.
+Parameters are set first, then filters, in the same order you'd set them in the dashboard. A filter applies on `sheet`. When `sheet` is omitted, tabpull applies that filter on the first entry in `sheets` and prints a line saying so. It does not copy the filter onto every sheet. Other sheets update only as they would in the dashboard when that filter changes.
 
 Dates written as `YYYY-MM-DD` or `M/D/YYYY`, and plain numbers, are converted for range filters. An impossible date such as `2024-02-31` or `2/31/2024` is rejected. A relative date (`yesterday`, `last week`, `today`, `7 days ago`) or a date computed at run time is refused. Use a parameter, or write an absolute `YYYY-MM-DD` or `M/D/YYYY` date. Omit `min` or `max` to leave that end open: `{ field = "Order Date", min = "2026-09-01", sheet = "Totals" }` runs from that date through the latest value the filter allows, and `{ field = "Order Date", max = "2026-09-25", sheet = "Totals" }` runs from the earliest value through that date.
 
@@ -153,7 +152,7 @@ Stories are refused; use the dashboard inside the story.
 
 ## Develop
 
-From a checkout of this repo, `uv tool install .` installs the command, and `uv run tabpull` runs it without installing. `uv run playwright install chromium` installs the Chromium fallback for that checkout. An installed `tabpull` uses `uvx --from tabpull playwright install chromium` instead.
+From a checkout of this repo, `uv tool install .` installs the command, and `uv run tabpull` runs it without installing. `uv run playwright install chromium` installs the Chromium fallback for that checkout. An installed `tabpull` prints `uvx playwright==<version> install chromium` for the Playwright version it has.
 
 ```sh
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest

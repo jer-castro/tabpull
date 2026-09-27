@@ -1,3 +1,4 @@
+import importlib.metadata
 import io
 import runpy
 import shlex
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any, Self, cast
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
 from rich.console import Console
 
 from tabpull import add, app, embed, run, tableau, ui, wizard
@@ -1211,6 +1213,24 @@ def test_missing_session_names_login(
 
     with pytest.raises(SystemExit, match=r'tabpull login --site demo'):
         tableau.browser_session(cast('Any', object()), settings)
+
+
+def test_missing_browsers_name_the_installed_playwright() -> None:
+    class _Missing:
+        def launch(self, *_args: object, **_kwargs: object) -> None:
+            msg = 'missing'
+            raise PlaywrightError(msg)
+
+    class _Pw:
+        chromium = _Missing()
+
+    version = importlib.metadata.version('playwright')
+    with pytest.raises(SystemExit) as exc:
+        tableau.launch_browser(cast('Any', _Pw()), headless=True)
+    assert str(exc.value) == (
+        'No Chrome or Edge found. Install one, or run: '
+        f'uvx playwright=={version} install chromium'
+    )
 
 
 def test_setup_writes_each_site_under_xdg(
