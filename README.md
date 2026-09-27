@@ -77,6 +77,8 @@ tabpull run daily-west weekly-east \
   --out "./exports/${end}"
 ```
 
+`run --param` uses the same repeatable Name=value syntax as `add`. Each override applies to every job in that run and is not written back to the jobs file. A saved param of that name is replaced. A name the job does not have is added for this run. `tabpull run daily-west --param "Top N=10"`.
+
 `run` writes `<job>/<sheet>.csv` under the current folder (spaces in names become `_`). `--jobs` and `--out` work before or after the subcommand:
 
 ```sh

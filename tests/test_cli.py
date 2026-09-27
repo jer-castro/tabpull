@@ -880,6 +880,19 @@ def test_run_help_documents_filter_overrides(
     assert 'daily-west weekly-east' in text
 
 
+def test_run_help_documents_param_overrides(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        app.main(['run', '--help'])
+    text = capsys.readouterr().out
+
+    assert exc.value.code == 0
+    assert '--param' in text
+    assert 'does not rewrite the jobs file' in text
+    assert 'name the job does not have is added' in text
+
+
 def test_run_filter_overrides_every_selected_job_without_rewriting_the_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -952,6 +965,69 @@ sheets = ["Detail"]
     assert 'Ship Mode' not in note
 
 
+def test_run_param_overrides_every_selected_job_without_rewriting_the_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    out = tmp_path / 'out'
+    jobs.write_text(
+        """
+[[job]]
+name = "daily"
+site = "one"
+view = "W/V"
+sheets = ["Totals"]
+params = { "Top N" = "25", "Region Param" = "West" }
+
+[[job]]
+name = "weekly"
+site = "one"
+view = "W/V"
+sheets = ["Detail"]
+""",
+        encoding='utf-8',
+    )
+    saved = jobs.read_text(encoding='utf-8')
+    seen: list[Job] = []
+
+    def export_embed(
+        _context: object, _settings: object, job: Job, out_dir: Path, **_kwargs: object
+    ) -> list[Path]:
+        seen.append(job)
+        return [out_dir / f'{job.name}.csv']
+
+    monkeypatch.setattr(run, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(run, 'load_site', lambda name: _settings(name, tmp_path))
+    monkeypatch.setattr(run, 'browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr(run, 'export_embed', export_embed)
+
+    code = app.main(
+        [
+            '--jobs',
+            str(jobs),
+            '--out',
+            str(out),
+            'run',
+            '--param',
+            'Top N=10',
+            '--param',
+            'Ship Mode=First Class',
+        ]
+    )
+    note = capsys.readouterr().out
+
+    assert code == 0
+    assert jobs.read_text(encoding='utf-8') == saved
+    assert [job.name for job in seen] == ['daily', 'weekly']
+    assert seen[0].params == {
+        'Top N': '10',
+        'Region Param': 'West',
+        'Ship Mode': 'First Class',
+    }
+    assert seen[1].params == {'Top N': '10', 'Ship Mode': 'First Class'}
+    assert 'names no sheet' not in note
+
+
 def test_run_filter_refuses_a_relative_date(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -991,6 +1067,35 @@ filters = [
         )
 
     assert 'YYYY-MM-DD or M/D/YYYY' in str(exc.value)
+    assert jobs.read_text(encoding='utf-8') == saved
+
+
+def test_run_param_refuses_a_spec_without_equals(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(
+        """
+[[job]]
+name = "daily"
+site = "one"
+view = "W/V"
+sheets = ["Totals"]
+""",
+        encoding='utf-8',
+    )
+    saved = jobs.read_text(encoding='utf-8')
+
+    def export_embed(*_args: object, **_kwargs: object) -> list[Path]:
+        msg = 'exported'
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(run, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(run, 'export_embed', export_embed)
+
+    with pytest.raises(SystemExit, match='Name=value'):
+        app.main(['--jobs', str(jobs), 'run', 'daily', '--param', 'Top N'])
+
     assert jobs.read_text(encoding='utf-8') == saved
 
 
@@ -1042,6 +1147,64 @@ sheets = ["Totals"]
     rerun = help_line.split('rerun them: ', 1)[1]
 
     assert 'Order Date=2026-09-01..' in rerun
+    fail.append(False)
+    assert app.main(shlex.split(rerun)[1:]) == 0
+    assert jobs.read_text(encoding='utf-8') == saved
+
+
+def test_failed_run_rerun_repeats_the_param_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(
+        """
+[[job]]
+name = "daily"
+site = "one"
+view = "W/V"
+sheets = ["Totals"]
+""",
+        encoding='utf-8',
+    )
+    saved = jobs.read_text(encoding='utf-8')
+    fail = [True]
+
+    def export_embed(
+        _context: object, _settings: object, job: Job, out_dir: Path, **_kwargs: object
+    ) -> list[Path]:
+        if fail.pop():
+            msg = 'boom'
+            raise JobError(msg)
+        return [out_dir / f'{job.name}.csv']
+
+    monkeypatch.setattr(run, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(run, 'load_site', lambda name: _settings(name, tmp_path))
+    monkeypatch.setattr(run, 'browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr(run, 'export_embed', export_embed)
+
+    assert (
+        app.main(
+            [
+                '--jobs',
+                str(jobs),
+                '--out',
+                'reports',
+                'run',
+                '--filter',
+                'Order Date=2026-09-01..',
+                '--param',
+                'Top N=10',
+            ]
+        )
+        == 1
+    )
+    help_line = capsys.readouterr().out.splitlines()[-1]
+    rerun = help_line.split('rerun them: ', 1)[1]
+
+    assert '--filter' in rerun
+    assert 'Order Date=2026-09-01..' in rerun
+    assert '--param' in rerun
+    assert 'Top N=10' in rerun
     fail.append(False)
     assert app.main(shlex.split(rerun)[1:]) == 0
     assert jobs.read_text(encoding='utf-8') == saved

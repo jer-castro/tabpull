@@ -27,7 +27,12 @@ from rich.rule import Rule
 from tabpull import ui, wizard
 from tabpull.add import add_job, add_job_from_flags
 from tabpull.cli import VERSION_FLAGS, version
-from tabpull.filters import filters_for_run, parse_filter_spec
+from tabpull.filters import (
+    filters_for_run,
+    params_for_run,
+    parse_filter_spec,
+    parse_param_spec,
+)
 from tabpull.home import file_flags, show_home
 from tabpull.jobs import JobError, check_known, saved_jobs_or_exit
 from tabpull.remove import remove_jobs
@@ -132,7 +137,11 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
     try:
         check_known(args.names, jobs)
         overrides = [parse_filter_spec(spec) for spec in args.filter_specs or []]
-        selected = [filters_for_run(job, overrides) for job in selected]
+        param_overrides = [parse_param_spec(spec) for spec in args.params or []]
+        selected = [
+            params_for_run(filters_for_run(job, overrides), param_overrides)
+            for job in selected
+        ]
     except JobError as e:
         raise SystemExit(str(e)) from e
     report = open_report(selected, out_dir)
@@ -140,8 +149,17 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
     filter_flags = [
         flag for spec in args.filter_specs or [] for flag in ('--filter', spec)
     ]
+    param_flags = [flag for spec in args.params or [] for flag in ('--param', spec)]
     rerun = shlex.join(
-        ['tabpull', 'run', *file_flags(args), *filter_flags, '--', *failed]
+        [
+            'tabpull',
+            'run',
+            *file_flags(args),
+            *filter_flags,
+            *param_flags,
+            '--',
+            *failed,
+        ]
     )
     report.summary(
         len(selected) - len(failed), len(selected), rerun if failed else None
@@ -254,11 +272,16 @@ does not rewrite the jobs file. With no @Sheet it replaces the job's saved
 filter on that field on every sheet; with @Sheet, only that sheet's. A field
 the job does not filter is added, on @Sheet or else the first sheet.
 
+--param uses the same Name=value syntax as add. It applies to every job in
+this run and does not rewrite the jobs file. A saved param of that name is
+replaced. A name the job does not have is added for this run.
+
 examples:
   tabpull run
   tabpull run daily-west
   tabpull run daily-west --filter "Order Date=2026-09-01.." --out ~/reports
   tabpull run daily-west weekly-east --filter "Order Date=2026-09-01..2026-09-07"
+  tabpull run daily-west --param "Top N=10"
 """,
     )
     run.add_argument('names', nargs='*', help='only these jobs (default: all)')
@@ -269,6 +292,16 @@ examples:
         metavar='SPEC',
         help=(
             'override Field=a|b or Field=min..max for this run only '
+            '(repeatable; applied to every selected job; jobs file unchanged)'
+        ),
+    )
+    run.add_argument(
+        '--param',
+        action='append',
+        dest='params',
+        metavar='NAME=VALUE',
+        help=(
+            'override Name=value for this run only '
             '(repeatable; applied to every selected job; jobs file unchanged)'
         ),
     )
