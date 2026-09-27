@@ -332,14 +332,6 @@ def _overrides(
 
 
 def filters_for_run(job: Job, overrides: Sequence[ValuesFilter | RangeFilter]) -> Job:
-    """Use `overrides` for this run instead of the saved filters on the same field.
-
-    The same overrides apply to every selected job. An override with ` @Sheet`
-    replaces that sheet's filter on the field; one with no sheet replaces the
-    field's filter on every sheet. A field the job does not filter there is added,
-    on the first sheet when no sheet is named, and that is printed. Nothing is
-    written to the jobs file.
-    """
     if not overrides:
         return job
     if not job.sheets:
@@ -970,11 +962,6 @@ def add_job(settings: Settings, jobs_path: Path, name: str | None = None) -> Non
 
 
 def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
-    """Parse `Field=a|b` or `Field=min..max`, with an optional ` @Sheet`.
-
-    Either side of `min..max` may be empty (`min..` or `..max`), not both. A relative date
-    or a date computed at run time is refused.
-    """
     body, sep, sheet = spec.rpartition(' @')
     if not sep:
         body, sheet = spec, ''
@@ -1141,7 +1128,6 @@ def _file_flags(args: argparse.Namespace) -> list[str]:
 
 
 def _run_flags(args: argparse.Namespace) -> list[str]:
-    """File flags plus this run's filter overrides, for the suggested rerun."""
     flags = _file_flags(args)
     for spec in args.filter_specs or []:
         flags += ['--filter', spec]

@@ -143,7 +143,6 @@ def _bound_day(bound: dict[str, Any] | None) -> str | None:
 
 
 def _date_problems(results: list[dict[str, Any]], sent: dict[str, Any]) -> list[str]:
-    """A set bound must match. An omitted bound must be the filter's own endpoint."""
     problems = []
     for result in results:
         applied = result['applied']
