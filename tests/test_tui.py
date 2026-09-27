@@ -1,6 +1,6 @@
 import asyncio
 import os
-import subprocess
+import subprocess  # noqa: S404
 import sys
 import threading
 from collections.abc import Awaitable, Callable
@@ -16,10 +16,10 @@ from textual.pilot import Pilot
 from textual.widget import Widget
 from textual.widgets import Checkbox, DataTable, Input, RadioButton, Static, TextArea
 
+import tabpull.tui.app as tui_app
 from tabpull import tableau, ui
 from tabpull.jobs import Job, RangeFilter, ValuesFilter, load_jobs, save_jobs
 from tabpull.run import Report
-import tabpull.tui.app as tui_app
 from tabpull.tui.app import HomeScreen, JobScreen, TabpullApp
 from tabpull.tui.forms import (
     ChecksForm,
@@ -617,7 +617,7 @@ def test_setup_save_anyway_and_a_refused_check_stays_on_the_form(
     def boom(_settings: object) -> None:
         msg = (
             "HTTPConnectionPool(host='127.0.0.1', port=9): Max retries exceeded "
-            "with url: /api/3.26/auth/signin (Caused by NewConnectionError("
+            'with url: /api/3.26/auth/signin (Caused by NewConnectionError('
             "'<urllib3.connection.HTTPConnection object at 0x10>: "
             'Failed to establish a new connection: [Errno 61] Connection refused'
             '))'
@@ -844,10 +844,10 @@ def _force_quit_child() -> None:
         threading.Event().wait()
         return []
 
-    tui_app.search_views = hang
+    tui_app.search_views = hang  # ty: ignore[invalid-assignment]
     app = TabpullApp(jobs, root / 'out')
 
-    async def drive(pilot: Pilot[None]) -> None:
+    async def drive(pilot: Pilot[object]) -> None:
         await pilot.press('a')
         app.screen.query_one('#value', Input).value = 'overview'
         await pilot.press('ctrl+s')
