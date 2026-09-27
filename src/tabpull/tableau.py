@@ -293,7 +293,6 @@ def _browser_pid(browser: Browser) -> int:
 
 
 def _track(browser: Browser) -> None:
-    """Let close_on_stop kill this browser until it disconnects."""
     pids = _browser_pids.get()
     if pids is None:
         return
@@ -310,13 +309,11 @@ def _track(browser: Browser) -> None:
 
 @contextmanager
 def close_on_stop() -> Iterator[None]:
-    """Kill the browsers launch_browser starts in this block once ui.stopped() is true.
+    """Hard-kill tracked browsers once ui.stopped() is true.
 
-    The sync API is not thread-safe, so the watcher thread never touches a
-    Playwright object. It only hard-kills browser pids the worker thread read
-    from Chrome over CDP. The Playwright driver stays up, so the call blocked
-    on the worker raises TargetClosedError and later close() calls return at
-    once.
+    Sync Playwright is not thread-safe and cancel arrives from the UI thread, so
+    the watcher only signals pids and never touches a Playwright object. The
+    driver stays up, so the blocked call raises and later close() calls return.
     """
     if _browser_pids.get() is not None or not ui.captures_stop():
         yield

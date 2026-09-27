@@ -591,8 +591,6 @@ class _Cdp:
 
 
 class _Launcher:
-    """Playwright whose chromium.launch() returns browser, backed by process pid."""
-
     def __init__(self, browser: object, pid: int) -> None:
         vars(browser)['new_browser_cdp_session'] = lambda: _Cdp(pid)
         vars(browser)['on'] = lambda *_args: None

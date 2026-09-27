@@ -41,7 +41,6 @@ def stopped() -> bool:
 
 
 def captures_stop() -> bool:
-    """True when this thread's capture() installed a stop callback."""
     return _stop.get() is not None
 
 
