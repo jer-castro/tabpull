@@ -20,7 +20,9 @@ from tabpull.jobs import (
     RangeFilter,
     ValuesFilter,
     job_to_toml,
+    load_jobs,
     parse_job,
+    save_jobs,
 )
 from tabpull.tableau import Settings, parse_tableau_url
 
@@ -85,6 +87,30 @@ def test_jobs_round_trip_through_toml() -> None:
     )
 
     assert [parse_job(raw) for raw in tomllib.loads(job_to_toml(job))['job']] == [job]
+
+
+def test_save_jobs_rewrites_the_file_and_leaves_it_empty(tmp_path: Path) -> None:
+    jobs = [
+        Job('daily', 'Sales/Overview', ['Detail'], 'demo'),
+        Job(
+            'weekly',
+            'Sales/Overview',
+            ['Totals'],
+            'demo',
+            [ValuesFilter('Region', ['West'], 'Totals')],
+            {'Top N': '25'},
+        ),
+    ]
+    path = tmp_path / 'nested' / 'jobs.toml'
+
+    save_jobs(path, jobs)
+    text = path.read_text(encoding='utf-8')
+
+    assert text == f'{job_to_toml(jobs[0])}\n{job_to_toml(jobs[1])}'
+    assert load_jobs(path) == jobs
+    save_jobs(path, [])
+    assert not path.read_text(encoding='utf-8')
+    assert load_jobs(path) == []
 
 
 @pytest.mark.parametrize(

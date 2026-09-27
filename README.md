@@ -8,7 +8,7 @@ tabpull exports named worksheets from a published Tableau dashboard to UTF-8 CSV
 uv tool install git+https://github.com/jer-castro/tabpull
 ```
 
-That installs the `tabpull` command. `setup`, `add`, `run`, and `login` are subcommands. Pin a tag with `@vX.Y.Z` on the URL. Upgrade with `uv tool upgrade tabpull`.
+That installs the `tabpull` command. `setup`, `add`, `remove`, `run`, and `login` are subcommands. Pin a tag with `@vX.Y.Z` on the URL. Upgrade with `uv tool upgrade tabpull`.
 
 ## Why Embedding API
 
@@ -43,6 +43,8 @@ tabpull add --site finance \
   --name daily-west
 tabpull run                         # every job, into the current folder
 tabpull run daily-west
+tabpull remove daily-west           # delete that saved job
+tabpull remove                      # pick jobs to delete
 tabpull login                       # refresh SSO for the only site
 tabpull login --site finance
 tabpull --version
@@ -51,6 +53,8 @@ tabpull --version
 With no command, tabpull prints configured sites, saved jobs, the jobs file, the output folder, and the next commands. A terminal shows panels. A pipe gets the same listing in [TOON](https://toonformat.dev/). Errors, including an unknown flag, print `error: ...` on stdout. A usage error exits 2. Any other failure exits 1.
 
 `add` saves the job and prints the `run` command. It does not export. With `--view` and at least one `--sheet`, it writes the job and does not prompt. Leave those flags off and it asks.
+
+`remove` deletes the named jobs and rewrites the jobs file. With no names, a terminal asks which jobs to delete and confirms before writing. With no terminal, pass the names. An unknown name exits 1 and lists the saved jobs, and the file is left unchanged. Removing every job leaves the file empty.
 
 `add` with `--view` and `--sheet` still opens the view far enough to refuse a story: `Stories are not supported; use the dashboard inside it.` `run` refuses a story the same way, before it exports.
 
@@ -98,7 +102,7 @@ The token secret is not printed. Setup and login print the server and the Tablea
 
 ## Jobs file
 
-`add` writes this. You can edit the file by hand:
+`add` writes this. `remove` rewrites it from the jobs that remain. You can edit the file by hand:
 
 ```toml
 [[job]]
