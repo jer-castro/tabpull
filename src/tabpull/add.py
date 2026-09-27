@@ -1,9 +1,3 @@
-"""Add a job: find a view, pick sheets, filters, and parameters, and append it to the jobs file.
-
-Prompted add searches views over REST and reads the view's sheets in a headless browser.
-Flag add takes the same answers as flags and opens the view only to refuse a story.
-"""
-
 import argparse
 import re
 from collections.abc import Callable, Sequence
@@ -52,12 +46,10 @@ _WORD_RE = re.compile(r'[^\W_]+')
 
 
 def _view_path(item: tsc.ViewItem) -> str:
-    """REST content URL `Workbook/sheets/View` as the job's `Workbook/View`."""
     return (item.content_url or '').replace('/sheets/', '/', 1)
 
 
 def match_score(query: str, text: str) -> float:
-    """1.0 when every query word is inside some word of `text`, lower for the closest misspelling."""
     words = _WORD_RE.findall(text.lower())
     terms = _WORD_RE.findall(query.lower())
     if not words or not terms:

@@ -1,9 +1,3 @@
-"""Setup wizard for `tabpull setup`.
-
-Asks for a local site name, a dashboard URL, a personal access token, and an SSO sign-in.
-Safe to re-run: Enter keeps the current values for that site.
-"""
-
 import itertools
 import platform
 import shutil
@@ -101,7 +95,6 @@ def warn(text: str) -> None:
 
 
 def open_url(url: str) -> None:
-    """Open the human's normal browser, including from WSL."""
     say(f'Opening {url}')
     if 'microsoft' in platform.release().lower() and (
         opener := shutil.which('wslview') or shutil.which('explorer.exe')
@@ -120,7 +113,6 @@ def confirm(question: str, *, default: bool = False) -> bool:
 
 
 def _checked(check: Callable[[str], object]) -> Callable[[str], bool | str]:
-    """Questionary validator from a function that raises ValueError."""
 
     def validate(value: str) -> bool | str:
         try:
@@ -133,14 +125,12 @@ def _checked(check: Callable[[str], object]) -> Callable[[str], bool | str]:
 
 
 def ask(key: str, prompt: str) -> str:
-    """Visible input, prefilled with the value already saved for this site."""
     existing = read_env_file(_run.env_path).get(key, '')
     answer = ui.ask(questionary.text(prompt, default=existing, style=ui.STYLE))
     return str(answer).strip() or existing
 
 
 def ask_secret(key: str, prompt: str) -> str:
-    """Hidden input; on re-runs Enter keeps the value already saved for this site."""
     existing = read_env_file(_run.env_path).get(key, '')
     instruction = '(Enter keeps the current one)' if existing else None
     answer = ui.ask(
@@ -150,7 +140,6 @@ def ask_secret(key: str, prompt: str) -> str:
 
 
 def write_env(key: str, value: str) -> None:
-    """Upsert KEY=VALUE into this site's file, keeping every other line."""
     upsert_env(_run.env_path, key, value)
     _run.written.append(key)
 

@@ -685,8 +685,6 @@ sheets = ["A"]
 """,
         encoding='utf-8',
     )
-    # The download path is unused: a story raises before export, and the dashboard
-    # job's fake page has no file. Point expect_download at a real CSV.
     raw = tmp_path / 'download.csv'
     raw.write_text('a,b\n1,2\n', encoding='utf-8')
 
@@ -1277,7 +1275,6 @@ def test_setup_writes_each_site_under_xdg(
     assert wizard.main('finance') == 'finance'
     assert wizard.main('finance') == 'finance'
     assert wizard.main('ops') == 'ops'
-    # Rich restyles a path in the middle, so the jobs file is not one raw substring.
     text = re.sub(r'\x1b\[[0-9;]*m', '', capsys.readouterr().out)
     finance = tableau.load_site('finance')
     ops = tableau.load_site('ops')

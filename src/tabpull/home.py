@@ -1,8 +1,3 @@
-"""The home screen: configured sites, saved jobs, and where files go.
-
-A person at a TTY sees Rich panels; an agent or a pipe reads TOON.
-"""
-
 import argparse
 import json
 import re
@@ -26,7 +21,6 @@ _TOON_QUOTE = re.compile(r'[,:"\\\[\]{}\x00-\x1f]')
 
 
 def _toon(value: object) -> str:
-    """One TOON value, quoted only when the spec requires it (comma delimiter)."""
     text = str(value)
     if isinstance(value, int):
         return text
@@ -49,7 +43,6 @@ def _toon_table(
 
 
 def file_flags(args: argparse.Namespace) -> list[str]:
-    """The --jobs/--out flags this invocation used, to carry into suggested commands."""
     flags = []
     if args.jobs:
         flags += ['--jobs', str(args.jobs)]
@@ -158,7 +151,6 @@ def _site_rows() -> list[list[str]]:
 
 
 def show_home(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> None:
-    """What an agent or a person needs first: sites, jobs, and where files go."""
     sites = _site_rows()
     jobs_error: str | None = None
     try:

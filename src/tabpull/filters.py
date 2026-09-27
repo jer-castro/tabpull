@@ -1,5 +1,3 @@
-"""Filters: the Field=... spec syntax, range-bound dates, and which sheet a filter applies on."""
-
 import re
 from collections.abc import Sequence
 from dataclasses import replace
@@ -7,19 +5,13 @@ from datetime import date
 
 from tabpull.jobs import Job, JobError, RangeFilter, ValuesFilter
 
-# Tableau's range-filter API only accepts a Date or a number. M/D/YYYY is what the
-# dashboard shows for a date filter; YYYY-MM-DD is what the embedding call converts.
-# Anything else on a range bound is a relative date or a date computed at run time.
+# Tableau's range-filter API only accepts a Date or a number.
 _US_DATE = re.compile(r'^(\d{1,2})/(\d{1,2})/(\d{4})$')
 _ISO_DATE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})$')
 _NUMBER = re.compile(r'^-?\d+(\.\d+)?$')
 
 
 def resolved_filters(job: Job) -> list[ValuesFilter | RangeFilter]:
-    """Apply a filter that names no sheet on the first sheet, and say so.
-
-    The filter is not copied onto the other sheets. A sheet named on the filter is left alone.
-    """
     if not job.sheets:
         msg = f'job {job.name!r}: needs at least one sheet'
         raise JobError(msg)
@@ -80,11 +72,6 @@ def _calendar_day(year: int, month: int, day: int, original: str) -> date:
 
 
 def normalize_range_bound(value: str | None) -> str | None:
-    """Turn an `M/D/YYYY` range bound into `YYYY-MM-DD`.
-
-    A blank bound is open and a number passes through. An impossible calendar day
-    is rejected. Any other text is a relative date or a date computed at run time.
-    """
     if value is None:
         return None
     text = value.strip()
@@ -108,7 +95,6 @@ def normalize_range_bound(value: str | None) -> str | None:
 
 
 def accept_range_bound(value: str | None) -> str | None:
-    """Keep the bound the user typed when it is safe to apply later."""
     normalize_range_bound(value)
     return value
 

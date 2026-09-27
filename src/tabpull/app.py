@@ -156,7 +156,6 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
         raise SystemExit(str(e)) from e
     report = open_report(selected, out_dir)
     failed = run_jobs(selected, out_dir, report)
-    # Flags before `--` so a job named like an option (`-daily`, `-h`) stays a name.
     rerun = shlex.join(['tabpull', 'run', *_run_flags(args), '--', *failed])
     report.summary(
         len(selected) - len(failed), len(selected), rerun if failed else None
@@ -165,8 +164,6 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
 
 
 class _Parser(argparse.ArgumentParser):
-    """Usage errors on stdout with this command's usage, so the fix is one step."""
-
     def error(self, message: str) -> NoReturn:
         print(f'error: {message}')
         print(self.format_usage().rstrip())
@@ -301,7 +298,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def cli() -> None:
-    """Print a failure as `error: ...` on stdout, where agents read the rest."""
     try:
         code = main()
     except KeyboardInterrupt:

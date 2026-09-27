@@ -1,5 +1,3 @@
-"""The Tableau Embedding API in a headless page: open a view, apply filters, export crosstabs."""
-
 import codecs
 import csv
 import io
@@ -146,7 +144,7 @@ def filter_payload(item: ValuesFilter | RangeFilter) -> dict[str, Any]:
 
 
 def normalize_csv(raw: bytes) -> str:
-    """Tableau's crosstab "CSV" is UTF-16 and tab-separated; rewrite it as plain UTF-8 CSV."""
+    """Tableau's crosstab "CSV" is UTF-16 and tab-separated."""
     if not raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         return raw.decode('utf-8-sig')
     out = io.StringIO()
@@ -161,7 +159,6 @@ def output_path(out_dir: Path, job: Job, sheet: str) -> Path:
 
 
 def _refuse_story(page: Page) -> None:
-    """Refuse a story the same way interactive add does, once the view has loaded."""
     try:
         page.evaluate(STORY_JS)
     except PlaywrightError as e:
@@ -207,7 +204,6 @@ def export_embed(
     *,
     on_sheet: Callable[[int, str], None] | None = None,
 ) -> list[Path]:
-    """Crosstab each sheet to CSV; `on_sheet(done, sheet)` fires before each export."""
     filters = resolved_filters(job)
     payloads = [filter_payload(item) for item in filters]
     page = open_view(context, settings, job.view)
