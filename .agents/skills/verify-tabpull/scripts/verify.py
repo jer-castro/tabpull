@@ -1,8 +1,4 @@
 #!/usr/bin/env -S uv run python
-"""Verification helpers for tabpull: doctor, inspect, date-filter.
-
-Run from the repo root: uv run python .agents/skills/verify-tabpull/scripts/verify.py --help
-"""
 
 import argparse
 import hashlib
@@ -28,7 +24,6 @@ from tabpull.tableau import (
     session_valid,
 )
 
-# UTC, west of UTC, east of UTC: a local-date bug shifts the day in at least one of them.
 TIMEZONES = ('UTC', 'America/Los_Angeles', 'Pacific/Auckland')
 
 READ_RANGE_JS = """async ({ sheet, field }) => {
@@ -157,7 +152,6 @@ def _date_problems(results: list[dict[str, Any]], sent: dict[str, Any]) -> list[
 
 
 def date_filter(args: argparse.Namespace) -> int:
-    """Apply one date range in several browser timezones; the applied range and the export must not move."""
     settings = _settings(args.site)
     range_filter = RangeFilter(args.field, args.sheet, args.min, args.max)
     sent = filter_payload(range_filter)
