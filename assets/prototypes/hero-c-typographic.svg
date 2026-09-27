@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480" role="img" aria-labelledby="title desc">
+  <title id="title">tabpull: pull the sheet, leave the workbook</title>
+  <desc id="desc">Poster-style wordmark for tabpull, a command-line tool that exports any Tableau dashboard sheet, hidden ones included, as a crosstab CSV without downloading the workbook.</desc>
+
+  <rect width="1280" height="480" rx="16" fill="#15120e"/>
+  <rect x="0.5" y="0.5" width="1279" height="479" rx="15.5" fill="none" stroke="#efe6d2" stroke-opacity=".12"/>
+
+  <g font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+    <text x="64" y="58" font-size="12" font-weight="600" letter-spacing=".22em" fill="#efe6d2" fill-opacity=".6">TABPULL / COMMAND LINE</text>
+    <text x="1216" y="58" font-size="12" font-weight="600" letter-spacing=".22em" fill="#efe6d2" fill-opacity=".6" text-anchor="end">TABLEAU CROSSTAB TO CSV</text>
+    <path d="M64 76H1216" stroke="#efe6d2" stroke-opacity=".28"/>
+
+    <text x="54" y="352" font-size="232" font-weight="800" letter-spacing="-0.05em" textLength="700" lengthAdjust="spacing" fill="#efe6d2">tab<tspan fill="#ff5b35">pull</tspan></text>
+
+    <path d="M800 184V352" stroke="#efe6d2" stroke-opacity=".18"/>
+
+    <g font-family="Iowan Old Style, Palatino Linotype, Palatino, Georgia, Cambria, serif" font-style="italic" font-size="40" fill="#efe6d2">
+      <text x="832" y="214">Pull the sheet.</text>
+      <text x="832" y="262">Leave the workbook.</text>
+    </g>
+
+    <g font-size="15" fill="#efe6d2" fill-opacity=".72">
+      <text x="864" y="304">Any sheet, hidden ones included</text>
+      <text x="864" y="328">Embedding API, your SSO session</text>
+      <text x="864" y="352">A PAT finds the views</text>
+    </g>
+    <g font-size="13" font-weight="700" fill="#ff5b35">
+      <text x="832" y="304">01</text>
+      <text x="832" y="328">02</text>
+      <text x="832" y="352">03</text>
+    </g>
+
+    <path d="M64 428H1216" stroke="#efe6d2" stroke-opacity=".28"/>
+    <g font-size="12" font-weight="600" letter-spacing=".22em" fill="#efe6d2" fill-opacity=".6">
+      <text x="64" y="452">SETUP</text>
+      <text x="136" y="452">ADD</text>
+      <text x="192" y="452">RUN</text>
+    </g>
+    <text x="1216" y="452" font-size="12" font-weight="600" letter-spacing=".22em" fill="#efe6d2" fill-opacity=".6" text-anchor="end">NO WORKBOOK DOWNLOAD</text>
+  </g>
+</svg>

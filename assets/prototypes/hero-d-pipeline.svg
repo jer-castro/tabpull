@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480" role="img" aria-labelledby="title desc">
+  <title id="title">tabpull: setup, add, run</title>
+  <desc id="desc">Three stages on one track. Setup checks a personal access token and signs in with SSO, add saves a job for a view, its sheets and filters, and run exports each sheet as a crosstab CSV.</desc>
+
+  <rect width="1280" height="480" rx="20" fill="#16132b"/>
+  <rect x="0.5" y="0.5" width="1279" height="479" rx="19.5" fill="none" stroke="#f1eefc" stroke-opacity=".12"/>
+
+  <g font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+    <text x="64" y="100" font-size="44" font-weight="800" letter-spacing="-0.035em" fill="#f1eefc">tabpull</text>
+    <text x="64" y="134" font-size="18" fill="#a59fc6">Crosstab any sheet. Skip the workbook.</text>
+    <text x="1216" y="100" font-size="14" fill="#a59fc6" text-anchor="end">Three commands. One CSV per sheet.</text>
+
+    <g stroke-width="4">
+      <path d="M100 236H460" stroke="#f6b23c"/>
+      <path d="M460 236H820" stroke="#34d3b0"/>
+      <path d="M820 236H1160" stroke="#ff7189"/>
+    </g>
+
+    <!-- setup -->
+    <circle cx="100" cy="236" r="36" fill="#f6b23c"/>
+    <g fill="none" stroke="#16132b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="90" cy="236" r="8"/>
+      <path d="M98 236H116M110 236V244M116 236V242"/>
+    </g>
+    <text x="64" y="314" font-size="13" font-weight="700" letter-spacing=".12em" fill="#f6b23c">01</text>
+    <text x="64" y="352" font-size="32" font-weight="700" letter-spacing="-0.02em" fill="#f1eefc">setup</text>
+    <text x="64" y="384" font-size="15" fill="#a59fc6">Checks your PAT, then signs in</text>
+    <text x="64" y="406" font-size="15" fill="#a59fc6">with SSO in a browser</text>
+
+    <!-- add -->
+    <circle cx="460" cy="236" r="36" fill="#34d3b0"/>
+    <path d="M460 222V250M446 236H474" stroke="#16132b" stroke-width="3.5" stroke-linecap="round"/>
+    <text x="424" y="314" font-size="13" font-weight="700" letter-spacing=".12em" fill="#34d3b0">02</text>
+    <text x="424" y="352" font-size="32" font-weight="700" letter-spacing="-0.02em" fill="#f1eefc">add</text>
+    <text x="424" y="384" font-size="15" fill="#a59fc6">Pick a view, its sheets and</text>
+    <text x="424" y="406" font-size="15" fill="#a59fc6">filters. Saves a job.</text>
+
+    <!-- run -->
+    <circle cx="820" cy="236" r="36" fill="#ff7189"/>
+    <path d="M812 222L832 236L812 250Z" fill="#16132b" stroke="#16132b" stroke-width="3" stroke-linejoin="round"/>
+    <text x="784" y="314" font-size="13" font-weight="700" letter-spacing=".12em" fill="#ff7189">03</text>
+    <text x="784" y="352" font-size="32" font-weight="700" letter-spacing="-0.02em" fill="#f1eefc">run</text>
+    <text x="784" y="384" font-size="15" fill="#a59fc6">Exports every job, hidden</text>
+    <text x="784" y="406" font-size="15" fill="#a59fc6">sheets included</text>
+
+    <!-- output -->
+    <g transform="translate(1160 196)">
+      <path d="M8 0H40L56 16V72a8 8 0 0 1-8 8H8a8 8 0 0 1-8-8V8a8 8 0 0 1 8-8Z" fill="#f1eefc"/>
+      <path d="M40 0V10a6 6 0 0 0 6 6H56" fill="#c9c3e6"/>
+      <text x="28" y="56" font-size="12" font-weight="800" fill="#16132b" text-anchor="middle" letter-spacing=".04em">CSV</text>
+    </g>
+    <text x="1216" y="352" font-size="32" font-weight="700" letter-spacing="-0.02em" fill="#f1eefc" text-anchor="end">.csv</text>
+    <text x="1216" y="384" font-size="13" fill="#a59fc6" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">exports/&lt;job&gt;/</text>
+    <text x="1216" y="406" font-size="13" fill="#a59fc6" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">&lt;sheet&gt;.csv</text>
+  </g>
+</svg>

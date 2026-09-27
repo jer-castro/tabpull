@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480" role="img" aria-labelledby="title desc">
+  <title id="title">tabpull: crosstab any sheet, skip the workbook</title>
+  <desc id="desc">A Tableau dashboard with a hidden worksheet tucked behind it. The hidden sheet slides out and becomes a CSV file, with no workbook download.</desc>
+
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" fill="none" stroke="#1f2a2e" stroke-opacity=".05"/>
+    </pattern>
+    <marker id="head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M1 1L9 5L1 9" fill="none" stroke="#e0592f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="480" rx="16" fill="#f4f0e8"/>
+  <rect width="1280" height="480" rx="16" fill="url(#grid)"/>
+  <rect x="0.5" y="0.5" width="1279" height="479" rx="15.5" fill="none" stroke="#1f2a2e" stroke-opacity=".14"/>
+
+  <g font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+
+    <!-- hidden sheet, still tucked behind the dashboard -->
+    <rect x="360" y="44" width="176" height="120" rx="8" fill="#fbe9e1" stroke="#e0592f" stroke-width="1.5" stroke-dasharray="5 5"/>
+
+    <!-- dashboard -->
+    <g transform="translate(64 64)">
+      <rect width="440" height="304" rx="10" fill="#ffffff" stroke="#d8d1c3"/>
+      <text x="20" y="30" font-size="13" font-weight="600" fill="#1f2a2e">Sales / Overview</text>
+      <text x="420" y="30" font-size="12" fill="#8c8576" text-anchor="end">dashboard</text>
+      <path d="M0 46H440" stroke="#ece6da"/>
+
+      <rect x="20" y="62" width="192" height="104" rx="6" fill="#f7f4ee"/>
+      <g fill="#2c6e63">
+        <rect x="36" y="118" width="20" height="32" rx="2"/>
+        <rect x="64" y="100" width="20" height="50" rx="2"/>
+        <rect x="92" y="108" width="20" height="42" rx="2"/>
+        <rect x="120" y="84" width="20" height="66" rx="2"/>
+        <rect x="148" y="94" width="20" height="56" rx="2"/>
+        <rect x="176" y="78" width="20" height="72" rx="2"/>
+      </g>
+
+      <rect x="228" y="62" width="192" height="104" rx="6" fill="#f7f4ee"/>
+      <path d="M244 142L276 124L308 132L340 102L372 110L404 82" fill="none" stroke="#2c6e63" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="404" cy="82" r="4.5" fill="#2c6e63"/>
+
+      <rect x="20" y="182" width="400" height="102" rx="6" fill="#f7f4ee"/>
+      <g fill="#2c6e63">
+        <rect x="104" y="200" width="264" height="12" rx="2"/>
+        <rect x="104" y="222" width="196" height="12" rx="2" fill-opacity=".75"/>
+        <rect x="104" y="244" width="148" height="12" rx="2" fill-opacity=".55"/>
+        <rect x="104" y="266" width="92" height="12" rx="2" fill-opacity=".35"/>
+      </g>
+      <g font-size="11" fill="#6f6859">
+        <text x="36" y="210">West</text>
+        <text x="36" y="232">East</text>
+        <text x="36" y="254">Central</text>
+        <text x="36" y="276">South</text>
+      </g>
+    </g>
+
+    <!-- the pulled sheet -->
+    <path d="M536 150C560 170 566 190 588 200" fill="none" stroke="#e0592f" stroke-width="1.5" stroke-dasharray="4 5" stroke-linecap="round"/>
+    <g transform="translate(596 90)">
+      <rect x="0" y="0" width="136" height="36" rx="8" fill="#e0592f"/>
+      <text x="16" y="19" font-size="13" font-weight="700" fill="#ffffff">Order Detail</text>
+      <rect x="0" y="26" width="264" height="220" rx="10" fill="#ffffff" stroke="#e0592f" stroke-width="1.5"/>
+      <rect x="0.75" y="27.5" width="135" height="10" fill="#ffffff"/>
+      <rect x="0.75" y="25" width="135" height="4" fill="#e0592f"/>
+      <g stroke="#ece6da">
+        <path d="M18 88H246M18 122H246M18 156H246M18 190H246"/>
+        <path d="M96 56V224M176 56V224"/>
+      </g>
+      <g font-size="12" font-weight="600" fill="#1f2a2e">
+        <text x="18" y="76">Order</text>
+        <text x="110" y="76">Region</text>
+        <text x="190" y="76">Sales</text>
+      </g>
+      <g fill="#d8d1c3">
+        <rect x="18" y="101" width="58" height="8" rx="2"/><rect x="110" y="101" width="40" height="8" rx="2"/><rect x="190" y="101" width="46" height="8" rx="2"/>
+        <rect x="18" y="135" width="58" height="8" rx="2"/><rect x="110" y="135" width="32" height="8" rx="2"/><rect x="190" y="135" width="40" height="8" rx="2"/>
+        <rect x="18" y="169" width="58" height="8" rx="2"/><rect x="110" y="169" width="44" height="8" rx="2"/><rect x="190" y="169" width="50" height="8" rx="2"/>
+        <rect x="18" y="203" width="58" height="8" rx="2"/><rect x="110" y="203" width="36" height="8" rx="2"/><rect x="190" y="203" width="30" height="8" rx="2"/>
+      </g>
+      <rect x="176" y="6" width="80" height="22" rx="11" fill="#1f2a2e"/>
+      <text x="216" y="21" font-size="10.5" font-weight="700" fill="#f4f0e8" text-anchor="middle" letter-spacing=".08em">HIDDEN</text>
+    </g>
+
+    <path d="M880 216H956" fill="none" stroke="#e0592f" stroke-width="2" stroke-linecap="round" marker-end="url(#head)"/>
+
+    <!-- csv file -->
+    <g transform="translate(980 68)">
+      <path d="M10 0H196L236 40V286a10 10 0 0 1-10 10H10A10 10 0 0 1 0 286V10A10 10 0 0 1 10 0Z" fill="#1f2a2e"/>
+      <path d="M196 0V30a10 10 0 0 0 10 10H236" fill="#3a484d"/>
+      <rect x="20" y="24" width="52" height="24" rx="6" fill="#e0592f"/>
+      <text x="46" y="41" font-size="12" font-weight="800" fill="#ffffff" text-anchor="middle" letter-spacing=".06em">CSV</text>
+      <text x="20" y="80" font-size="12" font-weight="600" fill="#f4f0e8">Order_Detail.csv</text>
+      <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="12.5" fill="#a9b4b0">
+        <text x="20" y="122"><tspan fill="#f4f0e8">Order,Region,Sales</tspan></text>
+        <text x="20" y="148">1041,West,1204.50</text>
+        <text x="20" y="174">1042,East,318.00</text>
+        <text x="20" y="200">1043,Central,77.25</text>
+        <text x="20" y="226">1044,West,942.10</text>
+        <text x="20" y="252" fill="#5f6d6a">...</text>
+      </g>
+      <text x="20" y="278" font-size="11" fill="#7f8b88">UTF-8</text>
+    </g>
+
+    <!-- type band -->
+    <text x="64" y="428" font-size="40" font-weight="800" letter-spacing="-0.035em" fill="#1f2a2e">tabpull</text>
+    <text x="236" y="426" font-size="20" font-weight="500" fill="#4c483f">Crosstab any sheet. Skip the workbook.</text>
+    <text x="1216" y="426" font-size="13" font-weight="600" fill="#e0592f" text-anchor="end" letter-spacing=".04em">hidden sheets included</text>
+  </g>
+</svg>
