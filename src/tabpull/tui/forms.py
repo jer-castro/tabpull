@@ -281,7 +281,7 @@ def _failure_text(exc: BaseException) -> str:
     if isinstance(exc, SystemExit):
         if isinstance(exc.code, str) and exc.code:
             return exc.code
-        return 'Cancelled.'
+        return f'Failed (exit {exc.code})'
     text = str(exc).partition('\n')[0].strip()
     return text or exc.__class__.__name__
 
@@ -432,13 +432,15 @@ class TaskScreen[T](ModalScreen[None]):
         Binding('ctrl+c,escape', 'cancel', 'cancel', priority=True),
     ]
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         title: str,
         work: Callable[[], T],
         done: Callable[[T], None],
         fail: Callable[[str], None],
         on_cancel: Callable[[], None] | None = None,
+        *,
+        hold_failure: bool = False,
     ) -> None:
         super().__init__()
         self.title_text = title
@@ -446,16 +448,28 @@ class TaskScreen[T](ModalScreen[None]):
         self._done_cb = done
         self._fail = fail
         self._on_cancel = on_cancel
+        self._hold_failure = hold_failure
         self._settled = False
+        self._failed_message: str | None = None
+        self._call: Callable[..., object] | None = None
+        self._release: Callable[[int], None] | None = None
+        self._task_key = 0
         self.transcript: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id='form'):
             yield Label(self.title_text, classes='title')
             yield RichLog(id='log', markup=False, wrap=True, auto_scroll=True)
-            yield Static('escape or ctrl+c cancels', classes='hint')
+            yield Static('escape or ctrl+c cancels', id='task-hint', classes='hint')
 
     def on_mount(self) -> None:
+        host = self.app
+        self._call = host.call_from_thread
+        self._task_key = id(self)
+        hold = getattr(host, 'hold_task', None)
+        if hold is not None:
+            hold(self._task_key)
+        self._release = getattr(host, 'release_task', None)
         self.run_worker(
             self._run,
             thread=True,
@@ -465,19 +479,36 @@ class TaskScreen[T](ModalScreen[None]):
         )
 
     def _run(self) -> None:
+        call = self._call
+        if call is None:
+            return
+
         def log(text: str) -> None:
-            self.app.call_from_thread(self._write, text)
+            call(self._write, text)
 
         def stop() -> bool:
             return get_current_worker().is_cancelled
 
         try:
-            with ui.capture(log, stop):
-                result = self._work()
-        except (KeyboardInterrupt, SystemExit, Exception) as exc:  # noqa: BLE001
-            self.app.call_from_thread(self._fail_with, _failure_text(exc))
+            try:
+                with ui.capture(log, stop):
+                    result = self._work()
+            except (KeyboardInterrupt, SystemExit, Exception) as exc:  # noqa: BLE001
+                self._drop_task()
+                call(self._fail_with, _failure_text(exc))
+                return
+            self._drop_task()
+            call(self._succeed, result)
+        finally:
+            self._drop_task()
+
+    def _drop_task(self) -> None:
+        release = self._release
+        key = self._task_key
+        if release is None or key == 0:
             return
-        self.app.call_from_thread(self._succeed, result)
+        self._task_key = 0
+        release(key)
 
     def _write(self, text: str) -> None:
         if self._settled or not self.is_attached:
@@ -496,13 +527,27 @@ class TaskScreen[T](ModalScreen[None]):
         self._done_cb(result)
 
     def _fail_with(self, message: str) -> None:
-        if self._settled:
+        if self._settled or not self.is_attached:
             return
-        self._settled = True
-        self.dismiss()
-        self._fail(message)
+        if not self._hold_failure:
+            self._settled = True
+            self.dismiss()
+            self._fail(message)
+            return
+        if self._failed_message is not None:
+            return
+        self._failed_message = message
+        self._write(message)
+        self.query_one('#task-hint', Static).update('press escape to close')
 
     def action_cancel(self) -> None:
+        if self._failed_message is not None:
+            message = self._failed_message
+            self._failed_message = None
+            self._settled = True
+            self.dismiss()
+            self._fail(message)
+            return
         if self._settled:
             return
         self._settled = True
@@ -519,7 +564,7 @@ def _check_token(settings: Settings) -> str:
         return 'ok'
 
 
-def _sign_in(settings: Settings) -> str:
+def sign_in(settings: Settings) -> str:
     with sync_playwright() as playwright:
         sso_login(playwright, settings)
     return settings.name
@@ -541,8 +586,8 @@ class SetupForm(Form[None]):
         yield Input(placeholder='finance', id='site')
         yield Label('Dashboard URL (blank keeps the saved URL)')
         yield Input(placeholder='https://...', id='url')
-        yield Label('Token name')
-        yield Input('tabpull', id='pat-name')
+        yield Label('Token name (blank keeps the saved name)')
+        yield Input(placeholder='tabpull', id='pat-name')
         yield Label('Token secret (blank keeps the saved secret)')
         yield Input(password=True, id='pat-secret')
         yield Checkbox('Sign in with the browser after saving', value=True, id='sso')
@@ -575,13 +620,15 @@ class SetupForm(Form[None]):
     def _collect(self) -> Settings:
         name = check_site_name(self.text('site').strip())
         url = self.text('url').strip()
-        token = self.text('pat-name').strip() or 'tabpull'
         secret = self.text('pat-secret').strip()
         current: Settings | None = None
         try:
             current = load_site(name)
         except (UnknownSiteError, MissingSettingsError, ValueError):
             current = None
+        token = self.text('pat-name').strip() or (
+            current.pat_name if current is not None and current.pat_name else 'tabpull'
+        )
         if url:
             parsed = parse_tableau_url(url)
             server, site = parsed.server, parsed.site
@@ -612,33 +659,39 @@ class SetupForm(Form[None]):
                 )
             )
 
-        self.app.push_screen(
+        _start_task(
+            self,
             TaskScreen(
                 'Checking the token…',
                 lambda: _check_token(settings),
                 lambda _ok: self._checked(settings),
                 failed,
-            )
+            ),
         )
 
     def _checked(self, settings: Settings) -> None:
-        save_site(
-            settings.name,
-            {
-                'TABLEAU_SERVER_URL': settings.server,
-                'TABLEAU_SITE': settings.site,
-                'TABLEAU_PAT_NAME': settings.pat_name,
-                'TABLEAU_PAT_SECRET': settings.pat_secret,
-            },
-        )
+        try:
+            save_site(
+                settings.name,
+                {
+                    'TABLEAU_SERVER_URL': settings.server,
+                    'TABLEAU_SITE': settings.site,
+                    'TABLEAU_PAT_NAME': settings.pat_name,
+                    'TABLEAU_PAT_SECRET': settings.pat_secret,
+                },
+            )
+        except OSError as e:
+            _show_error(self, str(e))
+            return
         if self.query_one('#sso', Checkbox).value:
-            self.app.push_screen(
+            _start_task(
+                self,
                 TaskScreen(
                     'Signing in…',
-                    lambda: _sign_in(settings),
+                    lambda: sign_in(settings),
                     lambda _name: self._finish(settings.name),
                     lambda message: self._finish(settings.name, error=message),
-                )
+                ),
             )
             return
         self._finish(settings.name, skipped=True)
@@ -651,10 +704,17 @@ class SetupForm(Form[None]):
                 severity='error',
                 timeout=10,
             )
-            return
-        if skipped:
+        elif skipped:
             self.app.notify(f'Site {name} saved. Browser sign-in skipped.')
         else:
             self.app.notify(f'Site {name} saved and signed in')
         if self._on_done is not None:
             self._on_done(name)
+
+
+def _start_task[T](screen: Widget, task: TaskScreen[T]) -> None:
+    start = getattr(screen.app, 'start_task', None)
+    if start is None:
+        screen.app.push_screen(task)
+        return
+    start(task)

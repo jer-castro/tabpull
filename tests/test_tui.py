@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 import pytest
 from textual.pilot import Pilot
-from textual.widgets import DataTable, Input, RadioButton, Static, TextArea
+from textual.widgets import Checkbox, DataTable, Input, RadioButton, Static, TextArea
 
 from tabpull import tableau, ui
 from tabpull.jobs import Job, RangeFilter, ValuesFilter, load_jobs, save_jobs
@@ -226,6 +226,14 @@ def test_home_runs_marked_jobs_and_removes_after_confirm(
         assert isinstance(tui.screen, TaskScreen)
         assert any('nope' in line for line in tui.screen.transcript)
         release.set()
+        await _until(
+            pilot,
+            lambda: (
+                isinstance(tui.screen, TaskScreen)
+                and any('failed' in line for line in tui.screen.transcript)
+            ),
+        )
+        await pilot.press('escape')
         await _until(pilot, lambda: isinstance(tui.screen, HomeScreen))
         assert seen == [['daily']]
         assert 'FAILED' in tui.last_run
@@ -235,6 +243,14 @@ def test_home_runs_marked_jobs_and_removes_after_confirm(
         await pilot.press('space', 'space', 'r')
         await _until(pilot, lambda: isinstance(tui.screen, TaskScreen))
         release.set()
+        await _until(
+            pilot,
+            lambda: (
+                isinstance(tui.screen, TaskScreen)
+                and any('failed' in line for line in tui.screen.transcript)
+            ),
+        )
+        await pilot.press('escape')
         await _until(pilot, lambda: isinstance(tui.screen, HomeScreen))
         assert seen[-1] == ['daily', 'weekly']
 
@@ -266,6 +282,18 @@ def test_run_stays_in_the_tui_when_export_crashes(
 
     async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
         await pilot.press('r')
+        await _until(
+            pilot,
+            lambda: (
+                isinstance(tui.screen, TaskScreen)
+                and any('browser blew up' in line for line in tui.screen.transcript)
+            ),
+        )
+        assert isinstance(tui.screen, TaskScreen)
+        assert 'press escape to close' in str(
+            tui.screen.query_one('#task-hint', Static).render()
+        )
+        await pilot.press('escape')
         await _until(
             pilot,
             lambda: isinstance(tui.screen, HomeScreen) and 'FAILED' in tui.last_run,
@@ -300,10 +328,9 @@ def test_login_signs_in_on_one_site_and_picks_when_there_are_two(
 ) -> None:
     notes = _notes(monkeypatch)
     signed: list[str] = []
-    monkeypatch.setattr('tabpull.tui.app.sync_playwright', _Browser)
     monkeypatch.setattr(
-        'tabpull.tui.app.sso_login',
-        lambda _pw, settings: signed.append(settings.name),
+        'tabpull.tui.app.sign_in',
+        lambda settings: signed.append(settings.name) or settings.name,
     )
     _site('demo')
 
@@ -335,15 +362,15 @@ def test_ctrl_c_during_login_returns_home(
     notes = _notes(monkeypatch)
     finished = threading.Event()
 
-    def hang(_pw: object, _settings: object) -> None:
+    def hang(_settings: object) -> str:
         try:
             while not ui.stopped():
                 threading.Event().wait(0.02)
         finally:
             finished.set()
+        return 'demo'
 
-    monkeypatch.setattr('tabpull.tui.app.sync_playwright', _Browser)
-    monkeypatch.setattr('tabpull.tui.app.sso_login', hang)
+    monkeypatch.setattr('tabpull.tui.app.sign_in', hang)
     _site()
 
     async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
@@ -537,3 +564,216 @@ def test_sso_login_stops_when_cancelled(
         tableau.sso_login(cast('Playwright', object()), settings)
     assert closed == [True]
     assert not settings.auth_path.exists()
+
+
+def test_setup_blank_fields_keep_the_saved_site(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tableau.save_site(
+        'finance',
+        {
+            'TABLEAU_SERVER_URL': 'https://tableau.example',
+            'TABLEAU_SITE': 'sales',
+            'TABLEAU_PAT_NAME': 'mytoken',
+            'TABLEAU_PAT_SECRET': 'old-secret',
+        },
+    )
+    monkeypatch.setattr(
+        'tabpull.tui.forms.rest_session', lambda _settings: nullcontext()
+    )
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('s')
+        form = tui.screen
+        assert isinstance(form, SetupForm)
+        form.query_one('#site', Input).value = 'finance'
+        form.query_one('#sso', Checkbox).value = False
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, HomeScreen))
+        saved = tableau.load_site('finance')
+        assert saved.server == 'https://tableau.example'
+        assert saved.site == 'sales'
+        assert saved.pat_name == 'mytoken'
+        assert saved.pat_secret == 'old-secret'  # noqa: S105
+
+    _drive(jobs_file, steps)
+
+
+def test_setup_save_anyway_and_a_refused_check_stays_on_the_form(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(_settings: object) -> None:
+        msg = 'token rejected'
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr('tabpull.tui.forms.rest_session', boom)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('s')
+        form = tui.screen
+        assert isinstance(form, SetupForm)
+        form.query_one('#site', Input).value = 'finance'
+        form.query_one('#url', Input).value = 'https://tableau.example'
+        form.query_one('#pat-secret', Input).value = 'secret-value'
+        form.query_one('#sso', Checkbox).value = False
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, ConfirmScreen))
+        await pilot.press('n')
+        assert isinstance(tui.screen, SetupForm)
+        assert 'finance' not in tableau.list_sites()
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, ConfirmScreen))
+        await pilot.press('y')
+        await _until(pilot, lambda: isinstance(tui.screen, HomeScreen))
+        assert tableau.load_site('finance').pat_secret == 'secret-value'  # noqa: S105
+
+    _drive(jobs_file, steps)
+
+
+def test_setup_save_error_stays_on_the_form(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        'tabpull.tui.forms.rest_session', lambda _settings: nullcontext()
+    )
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        msg = 'disk full'
+        raise OSError(msg)
+
+    monkeypatch.setattr('tabpull.tui.forms.save_site', boom)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('s')
+        form = tui.screen
+        assert isinstance(form, SetupForm)
+        form.query_one('#site', Input).value = 'finance'
+        form.query_one('#url', Input).value = 'https://tableau.example'
+        form.query_one('#pat-secret', Input).value = 'secret-value'
+        form.query_one('#sso', Checkbox).value = False
+        await pilot.press('ctrl+s')
+        await _until(
+            pilot,
+            lambda: 'disk full' in str(form.query_one('#error', Static).render()),
+        )
+        assert isinstance(tui.screen, SetupForm)
+        assert 'finance' not in tableau.list_sites()
+
+    _drive(jobs_file, steps)
+
+
+def test_add_rejects_a_duplicate_name(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _site()
+
+    class Item:
+        name = 'Overview'
+        content_url = 'Sales/sheets/Overview'
+        sheet_type = 'dashboard'
+
+    monkeypatch.setattr('tabpull.tui.app.search_views', lambda *_a, **_k: [Item()])
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('a')
+        tui.screen.query_one('#value', Input).value = 'overview'
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, ChoiceScreen))
+        await pilot.press('enter')
+        await _until(pilot, lambda: isinstance(tui.screen, TextForm))
+        tui.screen.query_one('#value', Input).value = 'daily'
+        await pilot.press('ctrl+s')
+        assert isinstance(tui.screen, TextForm)
+        assert 'already exists' in str(tui.screen.query_one('#error', Static).render())
+        assert [job.name for job in load_jobs(jobs_file)] == ['daily', 'weekly']
+
+    _drive(jobs_file, steps)
+
+
+def _fill_new_site(form: SetupForm, *, sso: bool) -> None:
+    form.query_one('#site', Input).value = 'finance'
+    form.query_one('#url', Input).value = 'https://tableau.example'
+    form.query_one('#pat-secret', Input).value = 'secret-value'
+    form.query_one('#sso', Checkbox).value = sso
+
+
+def test_add_with_no_site_continues_after_setup(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        'tabpull.tui.forms.rest_session', lambda _settings: nullcontext()
+    )
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('a')
+        assert isinstance(tui.screen, SetupForm)
+        _fill_new_site(tui.screen, sso=False)
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, TextForm))
+
+    _drive(jobs_file, steps)
+
+
+def test_add_continues_when_setup_sign_in_fails(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = _notes(monkeypatch)
+    monkeypatch.setattr(
+        'tabpull.tui.forms.rest_session', lambda _settings: nullcontext()
+    )
+
+    def fail(_pw: object, _settings: object) -> None:
+        msg = 'browser closed'
+        raise SystemExit(msg)
+
+    monkeypatch.setattr('tabpull.tui.forms.sso_login', fail)
+    monkeypatch.setattr('tabpull.tui.forms.sync_playwright', _Browser)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('a')
+        assert isinstance(tui.screen, SetupForm)
+        _fill_new_site(tui.screen, sso=True)
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, TextForm))
+        assert any('sign-in failed' in note for note in notes)
+        assert tableau.load_site('finance').pat_secret == 'secret-value'  # noqa: S105
+
+    _drive(jobs_file, steps)
+
+
+def test_cancel_then_run_does_not_overlap(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = _notes(monkeypatch)
+    state = {'n': 0, 'peak': 0}
+    lock = threading.Lock()
+    release = threading.Event()
+
+    def fake(jobs: list[Job], _out: Path, _report: Report) -> list[str]:
+        with lock:
+            state['n'] += 1
+            state['peak'] = max(state['peak'], state['n'])
+        release.wait(5)
+        with lock:
+            state['n'] -= 1
+        return [job.name for job in jobs]
+
+    monkeypatch.setattr('tabpull.tui.app.export_jobs', fake)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('r')
+        await _until(
+            pilot, lambda: isinstance(tui.screen, TaskScreen) and state['n'] == 1
+        )
+        await pilot.press('escape')
+        await _until(pilot, lambda: isinstance(tui.screen, HomeScreen))
+        await pilot.press('r')
+        await pilot.pause()
+        assert state['peak'] == 1
+        assert state['n'] == 1
+        assert isinstance(tui.screen, HomeScreen)
+        assert any('Still stopping' in note for note in notes)
+        release.set()
+        await _until(pilot, lambda: state['n'] == 0)
+
+    _drive(jobs_file, steps)

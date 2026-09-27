@@ -185,6 +185,18 @@ def _print_fields(
     return listed
 
 
+def filter_defaults(raw: ListedFilter) -> ValuesFilter | RangeFilter:
+    if raw['type'] == 'range':
+        low, sep, high = raw['current'].partition(' .. ')
+        if not sep:
+            low = high = ''
+        return RangeFilter(raw['field'], raw['sheet'], low, high)
+    current = '' if raw['current'] == '(All)' else raw['current']
+    return ValuesFilter(
+        raw['field'], split_values(current) if current else [], raw['sheet']
+    )
+
+
 def _prompt_filters(listed: list[ListedFilter]) -> list[ValuesFilter | RangeFilter]:
     filters: list[ValuesFilter | RangeFilter] = []
     if not listed:
@@ -201,21 +213,18 @@ def _prompt_filters(listed: list[ListedFilter]) -> list[ValuesFilter | RangeFilt
         )
         if item == 'Done':
             return filters
-        field_name, sheet = item['field'], item['sheet']
-        if item['type'] == 'range':
-            low, sep, high = item['current'].partition(' .. ')
-            if not sep:
-                low = high = ''
+        draft = filter_defaults(item)
+        field_name, sheet = draft.field, draft.sheet
+        if isinstance(draft, RangeFilter):
             while True:
-                start = _prompt_bound(f'{field_name} from', low)
-                end = _prompt_bound(f'{field_name} to', high)
+                start = _prompt_bound(f'{field_name} from', draft.min or '')
+                end = _prompt_bound(f'{field_name} to', draft.max or '')
                 if start or end:
                     break
                 ui.console.print('Give a from, a to, or both.')
             filters.append(RangeFilter(field_name, sheet, start, end))
         else:
-            default = '' if item['current'] == '(All)' else item['current']
-            values = _prompt_text(f'{field_name} values (a|b)', default=default)
+            values = _prompt_text(f'{field_name} values (a|b)', default=draft.pick_list)
             filters.append(ValuesFilter(field_name, split_values(values), sheet))
 
 

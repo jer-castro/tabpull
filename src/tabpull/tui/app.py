@@ -19,6 +19,7 @@ from tabpull.add import (
     MAX_SEARCH_RESULTS,
     ListedFilter,
     append_job,
+    filter_defaults,
     listed_filters,
     read_view,
     search_views,
@@ -26,7 +27,7 @@ from tabpull.add import (
     view_path,
 )
 from tabpull.embed import ViewInfo
-from tabpull.filters import format_filter, resolved_filters, split_values
+from tabpull.filters import format_filter, resolved_filters
 from tabpull.home import site_rows, sso_badge
 from tabpull.jobs import (
     Job,
@@ -48,7 +49,6 @@ from tabpull.tableau import (
     list_sites,
     load_site,
     parse_tableau_url,
-    sso_login,
 )
 from tabpull.tui.forms import (
     FORM_CSS,
@@ -62,6 +62,7 @@ from tabpull.tui.forms import (
     SheetsForm,
     TaskScreen,
     TextForm,
+    sign_in,
 )
 
 CSS = (
@@ -465,9 +466,38 @@ class TabpullApp(App[None]):
         self.jobs_file = jobs_file
         self.out_dir = out_dir
         self.last_run = ''
+        self._tasks: set[int] = set()
+        self._quit_armed = False
 
     def on_mount(self) -> None:
         self.push_screen(HomeScreen())
+
+    async def action_quit(self) -> None:
+        if self._tasks and not self._quit_armed:
+            self._quit_armed = True
+            if isinstance(self.screen, TaskScreen):
+                self.screen.action_cancel()
+            else:
+                for worker in self.workers:
+                    if worker.group == 'tabpull-task':
+                        worker.cancel()
+            self.notify('Stopping… (q again to force)', severity='warning')
+            return
+        if self._tasks:
+            print('Waiting for the current export to stop…', flush=True)
+        self.exit()
+
+    def hold_task(self, key: int) -> None:
+        self._tasks.add(key)
+
+    def release_task(self, key: int) -> None:
+        self._tasks.discard(key)
+
+    def start_task[T](self, screen: TaskScreen[T]) -> None:
+        if self._tasks:
+            self.notify('Still stopping the previous task…', severity='warning')
+            return
+        self.push_screen(screen)
 
     def action_help(self) -> None:
         if self.screen.query('HelpPanel'):
@@ -494,19 +524,24 @@ class TabpullApp(App[None]):
                 raise SystemExit(msg)
             return f'Exported {", ".join(job.name for job in selected)}'
 
-        self.push_screen(
+        self.start_task(
             TaskScreen(
                 'Export',
                 work,
                 lambda summary: self._finish_run(names, summary, failed=False),
                 lambda message: self._finish_run(names, message, failed=True),
-                on_cancel=lambda: self._finish_run(names, 'Cancelled.', failed=False),
+                on_cancel=lambda: self._finish_run(
+                    names, 'Cancelled.', failed=False, cancelled=True
+                ),
+                hold_failure=True,
             )
         )
 
-    def _finish_run(self, names: list[str], message: str, *, failed: bool) -> None:
+    def _finish_run(
+        self, names: list[str], message: str, *, failed: bool, cancelled: bool = False
+    ) -> None:
         label = ', '.join(names)
-        if message == 'Cancelled.':
+        if cancelled:
             self.last_run = f'last run: {label} cancelled'
             self.notify('Cancelled.', severity='warning')
         elif failed:
@@ -540,15 +575,10 @@ class TabpullApp(App[None]):
             self.notify(str(e), severity='error')
             return
 
-        def work() -> str:
-            with sync_playwright() as playwright:
-                sso_login(playwright, settings)
-            return name
-
-        self.push_screen(
+        self.start_task(
             TaskScreen(
                 f'Signing in to {name}…',
-                work,
+                lambda: sign_in(settings),
                 lambda _name: self._login_done(name),
                 lambda message: self.notify(message, severity='error', timeout=10),
             )
@@ -594,7 +624,7 @@ class TabpullApp(App[None]):
         def failed(message: str) -> None:
             self.notify(message, severity='error', timeout=10)
 
-        self.push_screen(
+        self.start_task(
             TaskScreen(
                 'Searching views…',
                 lambda: search_views(settings, query),
@@ -677,7 +707,7 @@ class TabpullApp(App[None]):
 
             self.push_screen(ChecksForm('Sheets to crosstab', names, chosen))
 
-        self.push_screen(
+        self.start_task(
             TaskScreen(
                 f'Opening {view}…',
                 work,
@@ -707,7 +737,7 @@ class TabpullApp(App[None]):
         self.push_screen(
             FilterForm(
                 f'Filter {raw["field"]}',
-                _filter_item(raw),
+                filter_defaults(raw),
                 draft.sheets[0],
                 draft.filters.append,
             )
@@ -785,17 +815,6 @@ class _TuiReport:
 
     def summary(self, ok: int, total: int, rerun: str | None) -> None:  # noqa: ARG002, PLR6301
         return None
-
-
-def _filter_item(raw: ListedFilter) -> ValuesFilter | RangeFilter:
-    if raw['type'] == 'range':
-        low, sep, high = raw['current'].partition(' .. ')
-        if not sep:
-            low = high = ''
-        return RangeFilter(raw['field'], raw['sheet'], low, high)
-    current = '' if raw['current'] == '(All)' else raw['current']
-    values = split_values(current) if current else []
-    return ValuesFilter(raw['field'], values, raw['sheet'])
 
 
 def run_tui(jobs_file: Path, out_dir: Path) -> None:
