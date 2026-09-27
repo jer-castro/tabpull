@@ -22,8 +22,8 @@ from tabpull.jobs import (
     JobError,
     RangeFilter,
     ValuesFilter,
+    delete_jobs,
     load_jobs,
-    remove_jobs,
     update_job,
 )
 from tabpull.tui.forms import (
@@ -206,7 +206,7 @@ class HomeScreen(Screen[None]):
             if not yes:
                 return
             try:
-                remove_jobs(self.app.jobs_file, names)
+                delete_jobs(self.app.jobs_file, names)
             except (JobError, tomllib.TOMLDecodeError, OSError) as e:
                 self.notify(str(e), severity='error')
             else:

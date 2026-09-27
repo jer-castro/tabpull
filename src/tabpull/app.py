@@ -3,8 +3,8 @@
 Commands:
   setup  save a site's personal access token and SSO session
   add    record a job (prompts, or flags for the site, view, sheets, and filters)
-  run    export jobs from the jobs file into the current folder
   remove delete saved jobs from the jobs file
+  run    export jobs from the jobs file into the current folder
   login  refresh a site's SSO session
 
 Run tabpull with no command at a terminal to open the interactive screen.
@@ -29,7 +29,8 @@ from tabpull.add import add_job, add_job_from_flags
 from tabpull.cli import VERSION_FLAGS, version
 from tabpull.filters import filters_for_run, parse_filter_spec
 from tabpull.home import file_flags, show_home
-from tabpull.jobs import JobError, load_jobs, remove_jobs
+from tabpull.jobs import JobError, load_jobs
+from tabpull.remove import remove_jobs
 from tabpull.run import open_report, run_jobs
 from tabpull.tableau import (
     MissingSettingsError,
@@ -123,15 +124,6 @@ def _cmd_add(args: argparse.Namespace, jobs_file: Path) -> None:
     ) as e:
         message = str(e).partition('\n')[0] or repr(e)
         raise SystemExit(message) from e
-
-
-def _cmd_remove(names: Sequence[str], jobs_file: Path) -> None:
-    try:
-        kept = remove_jobs(jobs_file, names)
-    except (JobError, tomllib.TOMLDecodeError, OSError) as e:
-        msg = f'{jobs_file}: {e}'
-        raise SystemExit(msg) from e
-    print(f'Removed {", ".join(names)} from {jobs_file}. {len(kept)} job(s) left.')
 
 
 def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
@@ -242,6 +234,26 @@ def _parser() -> tuple[_Parser, dict[str, _Parser]]:
         help='parameter Name=value (repeatable)',
     )
     _add_file_flags(add, out=False, default=argparse.SUPPRESS)
+    remove = commands.add_parser(
+        'remove',
+        help='delete saved jobs from the jobs file',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  tabpull remove daily-west
+  tabpull remove daily-west weekly-east
+  tabpull remove
+
+With no names, a terminal asks which jobs to remove, then confirms.
+Otherwise pass the names. The jobs file is rewritten from the jobs that
+remain. Removing every job leaves that file empty.
+""",
+    )
+    remove.add_argument(
+        'names',
+        nargs='*',
+        help='jobs to delete (prompt when omitted on a terminal)',
+    )
+    _add_file_flags(remove, out=False, default=argparse.SUPPRESS)
     run = commands.add_parser(
         'run',
         help='export jobs into the current folder',
@@ -273,14 +285,6 @@ examples:
         ),
     )
     _add_file_flags(run, out=True, default=argparse.SUPPRESS)
-    remove = commands.add_parser(
-        'remove',
-        help='delete saved jobs',
-        epilog='example:\n  tabpull remove daily-west weekly-east',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    remove.add_argument('names', nargs='+', help='job names to delete')
-    _add_file_flags(remove, out=False, default=argparse.SUPPRESS)
     login = commands.add_parser('login', help='refresh a site SSO browser session')
     login.add_argument(
         '--site', help='local site name (default: the only configured site)'
@@ -304,10 +308,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             _cmd_login(args.site)
         case 'add':
             _cmd_add(args, jobs_file)
+        case 'remove':
+            remove_jobs(jobs_file, args.names)
         case 'run':
             return _cmd_run(args, jobs_file, out_dir)
-        case 'remove':
-            _cmd_remove(args.names, jobs_file)
         case _ if ui.interactive():
             from tabpull.tui import run_tui  # noqa: PLC0415
 
@@ -332,5 +336,5 @@ def cli() -> None:
 
 
 if __name__ == '__main__':
-    print('Run: tabpull setup | add | run | remove | login', file=sys.stderr)
+    print('Run: tabpull setup | add | remove | run | login', file=sys.stderr)
     sys.exit(2)

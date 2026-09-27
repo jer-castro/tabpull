@@ -96,13 +96,6 @@ def load_jobs(path: Path) -> list[Job]:
 
 
 def save_jobs(path: Path, jobs: Sequence[Job]) -> None:
-    names = [job.name for job in jobs]
-    if any(not name.strip() for name in names):
-        msg = 'job name is empty'
-        raise JobError(msg)
-    if dupes := sorted({name for name in names if names.count(name) > 1}):
-        msg = f'duplicate job names: {", ".join(dupes)}'
-        raise JobError(msg)
     text = '\n'.join(job_to_toml(job) for job in jobs)
     _jobs_from_text(text)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,7 +122,7 @@ def update_job(path: Path, old_name: str, job: Job) -> list[Job]:
     return jobs
 
 
-def remove_jobs(path: Path, names: Sequence[str]) -> list[Job]:
+def delete_jobs(path: Path, names: Sequence[str]) -> list[Job]:
     jobs = load_jobs(path)
     if unknown := sorted(set(names) - {job.name for job in jobs}):
         raise _unknown(unknown, jobs)

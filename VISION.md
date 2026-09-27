@@ -4,12 +4,12 @@ This document describes the target state, not current behavior, and the gaps are
 tabpull exists so that a person can export a Tableau dashboard sheet as a crosstab CSV, including a hidden sheet, with the filters they would have set by hand.
 It serves someone who is allowed to crosstab a view and may not be allowed to download the workbook.
 It turns a jobs file and a Tableau session into one UTF-8 CSV per named sheet.
-It owns exactly one thing: the installed tabpull command that sets up a site, adds a job, runs it, and refreshes the sign-in.
+It owns exactly one thing: the installed tabpull command that sets up a site, adds a job, removes a job, runs it, and refreshes the sign-in.
 
 ## One command
 
 A person installs it with uv tool install and runs tabpull.
-setup, add, run, and login are subcommands of that one command.
+setup, add, remove, run, and login are subcommands of that one command.
 Running a source file is not a supported way to use it.
 The command runs once and exits, so a scheduler outside the tool can call it.
 tabpull has no interval, no wait loop, no daemon, and no scheduler of its own.
@@ -42,6 +42,11 @@ The loose name stays, because that is how a person finds a dashboard.
 add also accepts the site, the view, the sheets, and the filters as flags, and then writes the job without prompts.
 When those flags are absent, add still asks.
 add records the job and does not export until asked.
+remove deletes named jobs and rewrites the jobs file.
+A terminal with no names asks which jobs to delete.
+No terminal and no names stops and asks for the names.
+An unknown name leaves the file unchanged.
+Removing every job leaves the file empty.
 run exports the selected jobs, keeps going when one fails, and exits non-zero if any did.
 
 ## More than one site

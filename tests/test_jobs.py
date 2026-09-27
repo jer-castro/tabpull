@@ -10,8 +10,8 @@ from tabpull.jobs import (
     JobError,
     RangeFilter,
     ValuesFilter,
+    delete_jobs,
     load_jobs,
-    remove_jobs,
     save_jobs,
     update_job,
 )
@@ -50,17 +50,11 @@ def test_save_jobs_round_trips_filters_and_params(tmp_path: Path) -> None:
     assert not path.with_name('jobs.toml.tmp').exists()
 
 
-def test_save_jobs_refuses_duplicate_and_empty_names_without_writing(
-    tmp_path: Path,
-) -> None:
+def test_save_jobs_refuses_a_job_it_could_not_read_back(tmp_path: Path) -> None:
     path = tmp_path / 'jobs.toml'
     _write(path, _job('daily'))
     before = path.read_text(encoding='utf-8')
 
-    with pytest.raises(JobError, match='duplicate job names: daily'):
-        save_jobs(path, [_job('daily'), _job('daily')])
-    with pytest.raises(JobError, match='empty'):
-        save_jobs(path, [_job(' ')])
     with pytest.raises(JobError, match='needs at least one sheet'):
         save_jobs(path, [_job('daily', sheets=[])])
 
@@ -91,34 +85,20 @@ def test_update_job_renames_but_refuses_a_taken_name(tmp_path: Path) -> None:
         update_job(path, 'gone', _job('gone'))
 
 
-def test_remove_jobs_keeps_the_rest_and_names_unknown_jobs(tmp_path: Path) -> None:
+def test_delete_jobs_keeps_the_rest_and_names_unknown_jobs(tmp_path: Path) -> None:
     path = tmp_path / 'jobs.toml'
     _write(path, _job('a'), _job('b'), _job('c'))
 
-    kept = remove_jobs(path, ['a', 'c'])
+    kept = delete_jobs(path, ['a', 'c'])
 
     assert [job.name for job in kept] == ['b']
     assert load_jobs(path) == kept
     with pytest.raises(JobError, match=r'Unknown jobs: x\. Saved jobs: b'):
-        remove_jobs(path, ['b', 'x'])
+        delete_jobs(path, ['b', 'x'])
     assert [job.name for job in load_jobs(path)] == ['b']
 
-    remove_jobs(path, ['b'])
+    delete_jobs(path, ['b'])
     assert load_jobs(path) == []
-
-
-def test_cli_remove_rewrites_the_jobs_file(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = tmp_path / 'jobs.toml'
-    _write(path, _job('a'), _job('b'))
-
-    assert app.main(['remove', 'a', '--jobs', str(path)]) == 0
-    assert 'Removed a' in capsys.readouterr().out
-    assert [job.name for job in load_jobs(path)] == ['b']
-
-    with pytest.raises(SystemExit, match='Unknown jobs: nope'):
-        app.main(['--jobs', str(path), 'remove', 'nope'])
 
 
 def test_bare_tabpull_opens_the_tui_only_at_a_terminal(

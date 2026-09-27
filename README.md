@@ -8,7 +8,7 @@ tabpull exports named worksheets from a published Tableau dashboard to UTF-8 CSV
 uv tool install git+https://github.com/jer-castro/tabpull
 ```
 
-That installs the `tabpull` command. Bare `tabpull` at a terminal opens an interactive screen. `setup`, `add`, `run`, `remove`, and `login` are subcommands and work the same with or without it. Pin a tag with `@vX.Y.Z` on the URL. Upgrade with `uv tool upgrade tabpull`.
+That installs the `tabpull` command. Bare `tabpull` at a terminal opens an interactive screen. `setup`, `add`, `remove`, `run`, and `login` are subcommands and work the same with or without it. Pin a tag with `@vX.Y.Z` on the URL. Upgrade with `uv tool upgrade tabpull`.
 
 ## Why Embedding API
 
@@ -43,7 +43,8 @@ tabpull add --site finance \
   --name daily-west
 tabpull run                         # every job, into the current folder
 tabpull run daily-west
-tabpull remove daily-west           # delete saved jobs by name
+tabpull remove daily-west           # delete that saved job
+tabpull remove                      # pick jobs to delete
 tabpull login                       # refresh SSO for the only site
 tabpull login --site finance
 tabpull --version
@@ -54,6 +55,8 @@ With no command at a terminal, tabpull opens a full-screen list of sites and job
 With no command and no terminal (a pipe or a script), tabpull prints configured sites, saved jobs, the jobs file, the output folder, and the next commands in [TOON](https://toonformat.dev/). It never waits for keys. Errors, including an unknown flag, print `error: ...` on stdout. A usage error exits 2. Any other failure exits 1.
 
 `add` saves the job and prints the `run` command. It does not export. With `--view` and at least one `--sheet`, it writes the job and does not prompt. Leave those flags off and it asks.
+
+`remove` deletes the named jobs and rewrites the jobs file. With no names, a terminal asks which jobs to delete and confirms before writing. With no terminal, pass the names. An unknown name exits 1 and lists the saved jobs, and the file is left unchanged. Removing every job leaves the file empty.
 
 `add` with `--view` and `--sheet` still opens the view far enough to refuse a story: `Stories are not supported; use the dashboard inside it.` `run` refuses a story the same way, before it exports.
 
@@ -101,7 +104,7 @@ The token secret is not printed. Setup and login print the server and the Tablea
 
 ## Jobs file
 
-`add` writes this. You can edit the file by hand. Editing a job on the interactive screen and `remove` rewrite the whole file, which drops comments:
+`add` writes this. `remove` and edits on the interactive screen rewrite it from the saved jobs, which drops comments. You can edit the file by hand:
 
 ```toml
 [[job]]
