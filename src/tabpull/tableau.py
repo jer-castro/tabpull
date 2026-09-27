@@ -102,10 +102,6 @@ def _move_dir(source: Path, dest: Path) -> None:
     shutil.move(source, dest)
 
 
-def _migrate_layout() -> None:
-    _move_dir(_legacy_data_dir() / 'auth', config_dir() / 'auth')
-
-
 def jobs_path() -> Path:
     return config_dir() / 'jobs.toml'
 
@@ -115,7 +111,7 @@ def site_env_path(name: str) -> Path:
 
 
 def site_auth_path(name: str) -> Path:
-    _migrate_layout()
+    _move_dir(_legacy_data_dir() / 'auth', config_dir() / 'auth')
     return config_dir() / 'auth' / f'{check_site_name(name)}.json'
 
 

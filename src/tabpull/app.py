@@ -53,10 +53,6 @@ def _require_flag_shape(args: argparse.Namespace) -> None:
         raise SystemExit(msg)
 
 
-def _flag_mode(args: argparse.Namespace) -> bool:
-    return bool(args.view or args.sheets or args.filter_specs or args.params)
-
-
 def _configured_name(explicit: str | None) -> str:
     if explicit:
         try:
@@ -106,8 +102,9 @@ def _cmd_login(site: str | None) -> None:
 
 
 def _cmd_add(args: argparse.Namespace, jobs_file: Path) -> None:
+    flag_mode = args.view or args.sheets or args.filter_specs or args.params
     try:
-        if _flag_mode(args) or not ui.interactive():
+        if flag_mode or not ui.interactive():
             _require_flag_shape(args)
             add_job_from_flags(load_site(_configured_name(args.site)), args, jobs_file)
             return
@@ -124,13 +121,6 @@ def _cmd_add(args: argparse.Namespace, jobs_file: Path) -> None:
     ) as e:
         message = str(e).partition('\n')[0] or repr(e)
         raise SystemExit(message) from e
-
-
-def _run_flags(args: argparse.Namespace) -> list[str]:
-    flags = file_flags(args)
-    for spec in args.filter_specs or []:
-        flags += ['--filter', spec]
-    return flags
 
 
 def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
@@ -156,7 +146,12 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
         raise SystemExit(str(e)) from e
     report = open_report(selected, out_dir)
     failed = run_jobs(selected, out_dir, report)
-    rerun = shlex.join(['tabpull', 'run', *_run_flags(args), '--', *failed])
+    filter_flags = [
+        flag for spec in args.filter_specs or [] for flag in ('--filter', spec)
+    ]
+    rerun = shlex.join(
+        ['tabpull', 'run', *file_flags(args), *filter_flags, '--', *failed]
+    )
     report.summary(
         len(selected) - len(failed), len(selected), rerun if failed else None
     )

@@ -94,11 +94,6 @@ def normalize_range_bound(value: str | None) -> str | None:
     raise JobError(msg)
 
 
-def accept_range_bound(value: str | None) -> str | None:
-    normalize_range_bound(value)
-    return value
-
-
 def split_values(value: str) -> list[str]:
     return [v.strip() for v in value.split('|')]
 
@@ -118,18 +113,16 @@ def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
         raise JobError(msg)
     if '..' in value:
         low, _, high = value.partition('..')
-        if not low.strip() and not high.strip():
+        low, high = low.strip() or None, high.strip() or None
+        if low is None and high is None:
             msg = (
                 f'filter {spec!r} should look like Field=a|b or Field=min..max, '
                 'with an optional " @Sheet"'
             )
             raise JobError(msg)
-        return RangeFilter(
-            field_name,
-            sheet,
-            accept_range_bound(low.strip() or None),
-            accept_range_bound(high.strip() or None),
-        )
+        normalize_range_bound(low)
+        normalize_range_bound(high)
+        return RangeFilter(field_name, sheet, low, high)
     return ValuesFilter(field_name, split_values(value), sheet)
 
 
