@@ -1,4 +1,7 @@
 import asyncio
+import os
+import subprocess
+import sys
 import threading
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
@@ -10,11 +13,13 @@ if TYPE_CHECKING:
 
 import pytest
 from textual.pilot import Pilot
+from textual.widget import Widget
 from textual.widgets import Checkbox, DataTable, Input, RadioButton, Static, TextArea
 
 from tabpull import tableau, ui
 from tabpull.jobs import Job, RangeFilter, ValuesFilter, load_jobs, save_jobs
 from tabpull.run import Report
+import tabpull.tui.app as tui_app
 from tabpull.tui.app import HomeScreen, JobScreen, TabpullApp
 from tabpull.tui.forms import (
     ChecksForm,
@@ -599,11 +604,24 @@ def test_setup_blank_fields_keep_the_saved_site(
     _drive(jobs_file, steps)
 
 
+def _painted(widget: Widget) -> str:
+    return '\n'.join(
+        ''.join(segment.text for segment in widget.render_line(y))
+        for y in range(widget.size.height)
+    )
+
+
 def test_setup_save_anyway_and_a_refused_check_stays_on_the_form(
     jobs_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def boom(_settings: object) -> None:
-        msg = 'token rejected'
+        msg = (
+            "HTTPConnectionPool(host='127.0.0.1', port=9): Max retries exceeded "
+            "with url: /api/3.26/auth/signin (Caused by NewConnectionError("
+            "'<urllib3.connection.HTTPConnection object at 0x10>: "
+            'Failed to establish a new connection: [Errno 61] Connection refused'
+            '))'
+        )
         raise RuntimeError(msg)
 
     monkeypatch.setattr('tabpull.tui.forms.rest_session', boom)
@@ -618,6 +636,12 @@ def test_setup_save_anyway_and_a_refused_check_stays_on_the_form(
         form.query_one('#sso', Checkbox).value = False
         await pilot.press('ctrl+s')
         await _until(pilot, lambda: isinstance(tui.screen, ConfirmScreen))
+        title = tui.screen.query_one('.title')
+        assert title.region.right <= tui.size.width
+        assert title.region.bottom <= tui.size.height
+        assert 'Save this token anyway?' in _painted(title)
+        yes = tui.screen.query_one('#yes')
+        assert yes.region.bottom <= tui.size.height
         await pilot.press('n')
         assert isinstance(tui.screen, SetupForm)
         assert 'finance' not in tableau.list_sites()
@@ -777,3 +801,77 @@ def test_cancel_then_run_does_not_overlap(
         await _until(pilot, lambda: state['n'] == 0)
 
     _drive(jobs_file, steps)
+
+
+def test_second_q_returns_while_a_cancelled_search_is_blocked(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env['XDG_CONFIG_HOME'] = str(tmp_path / 'config')
+    env['TABPULL_QUIT_ROOT'] = str(tmp_path)
+    env['PYTHONUNBUFFERED'] = '1'
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, __file__, '--force-quit-child'],
+            env=env,
+            timeout=8,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        msg = 'q twice did not return to the shell'
+        raise AssertionError(msg) from exc
+    assert proc.returncode == 0, proc.stderr
+    assert 'force-quit-returned' in proc.stdout
+
+
+def _force_quit_child() -> None:
+    root = Path(os.environ['TABPULL_QUIT_ROOT'])
+    jobs = root / 'jobs.toml'
+    save_jobs(jobs, [])
+    tableau.save_site(
+        'demo',
+        {
+            'TABLEAU_SERVER_URL': 'https://tableau.example',
+            'TABLEAU_SITE': 'demo',
+            'TABLEAU_PAT_NAME': 'tabpull',
+            'TABLEAU_PAT_SECRET': 'pat-value',
+        },
+    )
+    started = threading.Event()
+
+    def hang(*_args: object, **_kwargs: object) -> list[object]:
+        started.set()
+        threading.Event().wait()
+        return []
+
+    tui_app.search_views = hang
+    app = TabpullApp(jobs, root / 'out')
+
+    async def drive(pilot: Pilot[None]) -> None:
+        await pilot.press('a')
+        app.screen.query_one('#value', Input).value = 'overview'
+        await pilot.press('ctrl+s')
+        for _ in range(50):
+            if started.is_set():
+                break
+            await pilot.pause(0.05)
+        else:
+            msg = 'search did not start'
+            raise RuntimeError(msg)
+        await pilot.press('escape')
+        for _ in range(50):
+            if type(app.screen).__name__ == 'HomeScreen':
+                break
+            await pilot.pause(0.05)
+        else:
+            msg = 'escape did not return home'
+            raise RuntimeError(msg)
+        await pilot.press('q')
+        await pilot.press('q')
+
+    app.run(headless=True, size=(100, 40), auto_pilot=drive)
+    print('force-quit-returned', flush=True)
+
+
+if __name__ == '__main__' and '--force-quit-child' in sys.argv:
+    _force_quit_child()

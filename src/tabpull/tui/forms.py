@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Callable
 from typing import ClassVar, override
 
@@ -21,7 +22,7 @@ from textual.widgets import (
     TextArea,
 )
 from textual.widgets.option_list import Option
-from textual.worker import get_current_worker
+from textual.worker import active_worker, get_current_worker
 
 from tabpull import ui
 from tabpull.filters import make_filter
@@ -60,6 +61,7 @@ Form, ConfirmScreen, ChoiceScreen, PickScreen, TaskScreen { align: center middle
 ChoiceScreen #form, PickScreen #form { width: 100; }
 TaskScreen #form { height: 22; width: 80; }
 TaskScreen #log { height: 1fr; margin-bottom: 1; }
+ConfirmScreen #form .title { width: 1fr; }
 """
 
 
@@ -256,7 +258,7 @@ class ConfirmScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id='form'):
-            yield Label(self.message, classes='title')
+            yield Static(self.message, classes='title', markup=False)
             with Horizontal(classes='buttons'):
                 yield Button('Yes (y)', variant='error', id='yes')
                 yield Button('No (n)', id='no')
@@ -427,6 +429,9 @@ class ChecksForm(Form[list[str]]):
         return chosen
 
 
+_TASK_POLL_S = 0.05
+
+
 class TaskScreen[T](ModalScreen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding('ctrl+c,escape', 'cancel', 'cancel', priority=True),
@@ -479,6 +484,25 @@ class TaskScreen[T](ModalScreen[None]):
         )
 
     def _run(self) -> None:
+        # A blocked Tableau call must not pin process shutdown. The call runs
+        # on a daemon thread; this worker returns once it is cancelled.
+        worker = get_current_worker()
+        finished = threading.Event()
+
+        def work() -> None:
+            token = active_worker.set(worker)
+            try:
+                self._work_in_thread()
+            finally:
+                active_worker.reset(token)
+                finished.set()
+
+        threading.Thread(target=work, name='tabpull-task', daemon=True).start()
+        while not finished.wait(_TASK_POLL_S):
+            if worker.is_cancelled:
+                return
+
+    def _work_in_thread(self) -> None:
         call = self._call
         if call is None:
             return
@@ -654,7 +678,7 @@ class SetupForm(Form[None]):
         def failed(message: str) -> None:
             self.app.push_screen(
                 ConfirmScreen(
-                    f'{message} Save this token anyway?',
+                    f'{message}\n\nSave this token anyway?',
                     lambda: self._checked(settings),
                 )
             )

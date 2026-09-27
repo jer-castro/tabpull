@@ -483,8 +483,6 @@ class TabpullApp(App[None]):
                         worker.cancel()
             self.notify('Stopping… (q again to force)', severity='warning')
             return
-        if self._tasks:
-            print('Waiting for the current export to stop…', flush=True)
         self.exit()
 
     def hold_task(self, key: int) -> None:
