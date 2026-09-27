@@ -156,7 +156,6 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
         raise SystemExit(str(e)) from e
     report = open_report(selected, out_dir)
     failed = run_jobs(selected, out_dir, report)
-    # Flags before `--` so a job named like an option (`-daily`, `-h`) stays a name.
     rerun = shlex.join(['tabpull', 'run', *_run_flags(args), '--', *failed])
     report.summary(
         len(selected) - len(failed), len(selected), rerun if failed else None

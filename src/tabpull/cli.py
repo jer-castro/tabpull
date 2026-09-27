@@ -14,7 +14,6 @@ def main() -> None:
     if any(sys.argv[1:] == [flag] for flag in VERSION_FLAGS):
         print(version())
         return
-    # Deferred so `tabpull --version` skips loading Playwright and the REST client.
     from tabpull.app import cli  # noqa: PLC0415
 
     cli()

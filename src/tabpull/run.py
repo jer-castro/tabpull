@@ -89,7 +89,6 @@ class _TTYRun:
         self.rows: list[tuple[str, bool, str]] = []
 
     def live(self) -> AbstractContextManager[object]:
-        # Progress redirects stdout, so site lines, filter notes, and SSO prompts still print.
         return self.progress
 
     def sheet(self, job: Job, done: int, sheet: str) -> None:

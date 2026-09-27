@@ -7,9 +7,7 @@ from datetime import date
 
 from tabpull.jobs import Job, JobError, RangeFilter, ValuesFilter
 
-# Tableau's range-filter API only accepts a Date or a number. M/D/YYYY is what the
-# dashboard shows for a date filter; YYYY-MM-DD is what the embedding call converts.
-# Anything else on a range bound is a relative date or a date computed at run time.
+# Tableau's range-filter API only accepts a Date or a number.
 _US_DATE = re.compile(r'^(\d{1,2})/(\d{1,2})/(\d{4})$')
 _ISO_DATE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})$')
 _NUMBER = re.compile(r'^-?\d+(\.\d+)?$')
