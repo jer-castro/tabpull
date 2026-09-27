@@ -21,7 +21,7 @@ The export is the crosstab from Download > Crosstab > CSV, not the workbook and 
 Every sheet, including a published worksheet, is exported through the Embedding API.
 REST summary data is not a second export, because it is not a crosstab and the embed path already returns the sheet.
 A story is refused, and the supported target is the dashboard inside it.
-A sheet that is hidden, or that is not first alphabetically, is exported by name like any other sheet.
+A dashboard-only sheet (a hidden sheet, with no published view of its own), or a sheet that is not first alphabetically, is exported by name like any other sheet.
 
 ## Filters behave like the dashboard
 
