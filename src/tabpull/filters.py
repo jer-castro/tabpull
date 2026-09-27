@@ -147,13 +147,8 @@ def make_filter(
 
 
 def format_filter(item: ValuesFilter | RangeFilter) -> str:
-    if isinstance(item, RangeFilter):
-        shown = f'{item.min or ""}..{item.max or ""}'
-    else:
-        shown = '|'.join(item.values)
-    return (
-        f'{item.field}={shown} @{item.sheet}' if item.sheet else f'{item.field}={shown}'
-    )
+    spec = f'{item.field}={item.shown}'
+    return f'{spec} @{item.sheet}' if item.sheet else spec
 
 
 def parse_param_spec(spec: str) -> tuple[str, str]:

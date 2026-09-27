@@ -174,7 +174,7 @@ class FilterForm(Form[ValuesFilter | RangeFilter]):
 
     def fields(self) -> ComposeResult:
         item = self.item
-        is_range = isinstance(item, RangeFilter)
+        is_range = item is not None and item.kind == RangeFilter.kind
         yield Label('Field (as Tableau shows it)')
         yield Input(item.field if item else '', id='field')
         yield Label('Sheet the filter is set on')
@@ -188,14 +188,13 @@ class FilterForm(Form[ValuesFilter | RangeFilter]):
             )
         with Vertical(id='values-box'):
             yield Label('Values, separated by |')
-            values = '|'.join(item.values) if isinstance(item, ValuesFilter) else ''
-            yield Input(values, id='values')
-        low, high = (item.min, item.max) if isinstance(item, RangeFilter) else ('', '')
+            yield Input(item.pick_list if item else '', id='values')
+        low, high = item.bounds if item else ('', '')
         with Vertical(id='range-box'):
             yield Label('From (YYYY-MM-DD, M/D/YYYY, or a number; blank = open)')
-            yield Input(low or '', id='low')
+            yield Input(low, id='low')
             yield Label('To (blank = open)')
-            yield Input(high or '', id='high')
+            yield Input(high, id='high')
 
     def on_mount(self) -> None:
         self._show_kind()

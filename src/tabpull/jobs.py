@@ -4,6 +4,7 @@ import tomllib
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 
 @dataclass(frozen=True)
@@ -11,6 +12,19 @@ class ValuesFilter:
     field: str
     values: list[str]
     sheet: str = ''
+    kind: ClassVar[str] = 'values'
+
+    @property
+    def pick_list(self) -> str:
+        return '|'.join(self.values)
+
+    @property
+    def bounds(self) -> tuple[str, str]:
+        return '', ''
+
+    @property
+    def shown(self) -> str:
+        return self.pick_list
 
 
 @dataclass(frozen=True)
@@ -19,6 +33,19 @@ class RangeFilter:
     sheet: str
     min: str | None = None
     max: str | None = None
+    kind: ClassVar[str] = 'range'
+
+    @property
+    def pick_list(self) -> str:
+        return ''
+
+    @property
+    def bounds(self) -> tuple[str, str]:
+        return self.min or '', self.max or ''
+
+    @property
+    def shown(self) -> str:
+        return '..'.join(self.bounds)
 
 
 @dataclass(frozen=True)

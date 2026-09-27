@@ -74,12 +74,6 @@ def _refill(
         table.move_cursor(row=min(cursor, len(rows) - 1))
 
 
-def _kind_value(item: ValuesFilter | RangeFilter) -> tuple[str, str]:
-    if isinstance(item, RangeFilter):
-        return 'range', f'{item.min or "(open)"} .. {item.max or "(open)"}'
-    return 'values', ' | '.join(item.values)
-
-
 def _save_error(e: Exception) -> JobError:
     return e if isinstance(e, JobError) else JobError(str(e))
 
@@ -284,7 +278,7 @@ class JobScreen(Screen[None]):
         _refill(
             self.query_one('#filters', DataTable),
             [
-                (item.field, item.sheet or f'({job.sheets[0]})', *_kind_value(item))
+                (item.field, item.sheet or f'({job.sheets[0]})', item.kind, item.shown)
                 for item in job.filters
             ],
         )

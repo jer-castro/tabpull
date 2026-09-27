@@ -12,6 +12,7 @@ from tabpull.jobs import (
     ValuesFilter,
     check_known,
     delete_jobs,
+    job_to_toml,
     load_jobs,
     save_jobs,
     saved_jobs_or_exit,
@@ -154,6 +155,26 @@ def test_make_filter_builds_and_validates_values_and_ranges() -> None:
         make_filter('Order Date', 'A', high='yesterday')
     with pytest.raises(JobError, match='field name'):
         make_filter(' ', 'A', values='x')
+
+
+def test_filter_types_share_kind_shown_pick_list_and_bounds() -> None:
+    values = ValuesFilter('Region', ['West', 'East'], 'A')
+    both = RangeFilter('Order Date', 'A', '2026-09-01', '2026-09-25')
+    open_min = RangeFilter('Order Date', 'A', None, '2026-09-25')
+
+    assert (values.kind, values.shown, values.pick_list, values.bounds) == (
+        'values',
+        'West|East',
+        'West|East',
+        ('', ''),
+    )
+    assert (both.kind, both.shown, both.pick_list) == (
+        'range',
+        '2026-09-01..2026-09-25',
+        '',
+    )
+    assert (open_min.shown, open_min.bounds) == ('..2026-09-25', ('', '2026-09-25'))
+    assert 'kind' not in job_to_toml(_job('a', filters=[values, both]))
 
 
 def test_format_filter_reads_like_the_flag_syntax() -> None:
