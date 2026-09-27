@@ -14,7 +14,7 @@ Running a source file is not a supported way to use it.
 Each subcommand runs once and exits, so a scheduler outside the tool can call it.
 tabpull with no subcommand at a terminal opens an interactive screen, the face of that same command for a person who would rather not type flags.
 The screen lists sites and jobs and edits a saved job in place.
-It runs, adds, removes, sets up, and signs in through the same code as the subcommands, and run, add, setup, and login leave the screen to run that subcommand once and exit.
+It runs, adds, removes, sets up, and signs in through the same code as the subcommands, and run, add, setup, and login stay on the screen.
 It stays open only while a person uses it, and quitting it ends the command.
 tabpull with no subcommand and no terminal prints the sites and jobs and exits without waiting for keys.
 tabpull has no interval, no timer, no background process, no daemon, and no scheduler of its own.
