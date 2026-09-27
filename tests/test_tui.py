@@ -7,7 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Self, cast
 
 if TYPE_CHECKING:
     from playwright.sync_api import Playwright
@@ -573,14 +573,36 @@ def test_sso_login_stops_when_cancelled(
     assert not settings.auth_path.exists()
 
 
-class _PidPlaywright:
+class _Cdp:
     def __init__(self, pid: int) -> None:
-        proc = type('_Proc', (), {'pid': pid})()
-        transport = type('_Transport', (), {'_proc': proc})()
-        connection = type('_Connection', (), {'_transport': transport})()
-        self._impl_obj = type('_Impl', (), {'_connection': connection})()
+        self.pid = pid
 
-    def __enter__(self) -> object:
+    def send(self, method: str) -> dict[str, list[dict[str, object]]]:
+        assert method == 'SystemInfo.getProcessInfo'
+        return {
+            'processInfo': [
+                {'type': 'renderer', 'id': 1},
+                {'type': 'browser', 'id': self.pid},
+            ]
+        }
+
+    def detach(self) -> None:
+        return None
+
+
+class _Launcher:
+    """Playwright whose chromium.launch() returns browser, backed by process pid."""
+
+    def __init__(self, browser: object, pid: int) -> None:
+        vars(browser)['new_browser_cdp_session'] = lambda: _Cdp(pid)
+        vars(browser)['on'] = lambda *_args: None
+        self.browser = browser
+        self.chromium = self
+
+    def launch(self, **_kwargs: object) -> object:
+        return self.browser
+
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -604,7 +626,7 @@ def test_cancel_during_sign_in_request_does_not_wait_it_out(
         def post(self, *_args: object, **_kwargs: object) -> object:
             entered.set()
             proc.wait()
-            msg = 'Connection closed while reading from the driver'
+            msg = 'Target page, context or browser has been closed'
             raise PlaywrightError(msg)
 
     class Page:
@@ -635,7 +657,7 @@ def test_cancel_during_sign_in_request_does_not_wait_it_out(
         assert entered.wait(5)
         stop['on'] = True
 
-    monkeypatch.setattr(tableau, 'launch_browser', lambda *_a, **_k: Browser())
+    launcher = _Launcher(Browser(), proc.pid)
     threading.Thread(target=flip, daemon=True).start()
     started = time.monotonic()
     try:
@@ -643,7 +665,7 @@ def test_cancel_during_sign_in_request_does_not_wait_it_out(
             ui.capture(lambda _line: None, lambda: stop['on']),
             pytest.raises(SystemExit, match='cancelled'),
         ):
-            tableau.sso_login(cast('Playwright', _PidPlaywright(proc.pid)), settings)
+            tableau.sso_login(cast('Playwright', launcher), settings)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -669,7 +691,7 @@ def test_ctrl_c_stops_sign_in_during_the_poll(
         def wait_for_timeout(self, _ms: int) -> None:
             entered.set()
             proc.wait()
-            msg = 'Connection closed while reading from the driver'
+            msg = 'Target page, context or browser has been closed'
             raise PlaywrightError(msg)
 
     class Context:
@@ -686,9 +708,8 @@ def test_ctrl_c_stops_sign_in_during_the_poll(
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(tableau, 'launch_browser', lambda *_a, **_k: Browser())
     monkeypatch.setattr(
-        'tabpull.tui.forms.sync_playwright', lambda: _PidPlaywright(proc.pid)
+        'tabpull.tui.forms.sync_playwright', lambda: _Launcher(Browser(), proc.pid)
     )
 
     async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
@@ -719,7 +740,7 @@ def test_escape_stops_the_sheet_being_exported(
             if script == embed.EXPORT_JS:
                 entered.set()
                 proc.wait()
-                msg = 'Connection closed while reading from the driver'
+                msg = 'Target page, context or browser has been closed'
                 raise PlaywrightError(msg)
 
         def expect_download(self, timeout: int) -> object:
@@ -735,8 +756,15 @@ def test_escape_stops_the_sheet_being_exported(
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr('tabpull.run.sync_playwright', lambda: _PidPlaywright(proc.pid))
-    monkeypatch.setattr('tabpull.run.browser_session', lambda *_a, **_k: object())
+    def browser_session(pw: 'Playwright', _settings: object) -> object:
+        tableau.launch_browser(pw, headless=True)
+        return object()
+
+    monkeypatch.setattr(
+        'tabpull.run.sync_playwright',
+        lambda: _Launcher(type('Browser', (), {})(), proc.pid),
+    )
+    monkeypatch.setattr('tabpull.run.browser_session', browser_session)
     monkeypatch.setattr('tabpull.embed.open_view', lambda *_a, **_k: Page())
 
     async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:

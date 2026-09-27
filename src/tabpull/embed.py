@@ -15,7 +15,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from tabpull import ui
 from tabpull.filters import normalize_range_bound, resolved_filters
 from tabpull.jobs import Job, JobError, RangeFilter, ValuesFilter, slug
-from tabpull.tableau import Settings, driver_killed
+from tabpull.tableau import Settings
 
 VIZ_LOAD_TIMEOUT_MS = 180_000
 DOWNLOAD_TIMEOUT_MS = 300_000
@@ -165,22 +165,15 @@ def _refuse_story(page: Page) -> None:
         raise JobError(msg) from e
 
 
-def _close_page(page: Page) -> None:
-    # page.close() waits forever once close_on_stop has killed the driver.
-    if driver_killed():
-        return
-    page.close()
-
-
 def _publish_csv(path: Path, text: str) -> None:
-    if ui.stopped() or driver_killed():
+    if ui.stopped():
         msg = 'Cancelled.'
         raise JobError(msg)
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(f'.{path.name}.partial')
     try:
         partial.write_text(text, encoding='utf-8')
-        if ui.stopped() or driver_killed():
+        if ui.stopped():
             msg = 'Cancelled.'
             raise JobError(msg)
         partial.replace(path)
@@ -211,7 +204,7 @@ def open_view(context: BrowserContext, settings: Settings, view: str) -> Page:
     try:
         _refuse_story(page)
     except (JobError, PlaywrightError):
-        _close_page(page)
+        page.close()
         raise
     return page
 
@@ -237,14 +230,14 @@ def export_embed(
         )
         written = []
         for sheet in job.sheets:
-            if ui.stopped() or driver_killed():
+            if ui.stopped():
                 msg = 'Cancelled.'
                 raise JobError(msg)
             if on_sheet is not None:
                 on_sheet(len(written), sheet)
             with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as download:
                 page.evaluate(EXPORT_JS, sheet)
-            if ui.stopped() or driver_killed():
+            if ui.stopped():
                 msg = 'Cancelled.'
                 raise JobError(msg)
             path = out_dir / slug(job.name) / f'{slug(sheet)}.csv'
@@ -252,4 +245,4 @@ def export_embed(
             written.append(path)
         return written
     finally:
-        _close_page(page)
+        page.close()

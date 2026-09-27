@@ -1,6 +1,5 @@
 import importlib.metadata
 import io
-import os
 import re
 import runpy
 import shlex
@@ -1308,12 +1307,30 @@ sheets = ["Gamma"]
     assert 'broken view' in buffer.getvalue()
 
 
-class _DriverPlaywright:
+class _Cdp:
     def __init__(self, pid: int) -> None:
-        proc = type('_Proc', (), {'pid': pid})()
-        transport = type('_Transport', (), {'_proc': proc})()
-        connection = type('_Connection', (), {'_transport': transport})()
-        self._impl_obj = type('_Impl', (), {'_connection': connection})()
+        self.pid = pid
+
+    def send(self, method: str) -> dict[str, list[dict[str, object]]]:
+        assert method == 'SystemInfo.getProcessInfo'
+        return {'processInfo': [{'type': 'browser', 'id': self.pid}]}
+
+    def detach(self) -> None:
+        return None
+
+
+class _Launcher:
+    """Playwright whose chromium.launch() returns a browser backed by process pid."""
+
+    def __init__(self, pid: int) -> None:
+        browser = type('Browser', (), {})()
+        vars(browser)['new_browser_cdp_session'] = lambda: _Cdp(pid)
+        vars(browser)['on'] = lambda *_args: None
+        self.browser = browser
+        self.chromium = self
+
+    def launch(self, **_kwargs: object) -> object:
+        return self.browser
 
     def __enter__(self) -> Self:
         return self
@@ -1358,7 +1375,7 @@ def test_cancel_during_export_reports_cancelled_without_a_csv(
             if script == embed.EXPORT_JS:
                 entered.set()
                 proc.wait()
-                msg = 'Connection closed while reading from the driver'
+                msg = 'Target page, context or browser has been closed'
                 raise PlaywrightError(msg)
 
         def expect_download(self, timeout: int) -> object:
@@ -1378,9 +1395,13 @@ def test_cancel_during_export_reports_cancelled_without_a_csv(
         assert entered.wait(5)
         stop['on'] = True
 
-    monkeypatch.setattr(run, 'sync_playwright', lambda: _DriverPlaywright(proc.pid))
+    def browser_session(pw: Any, _settings: object) -> object:  # noqa: ANN401
+        tableau.launch_browser(pw, headless=True)
+        return object()
+
+    monkeypatch.setattr(run, 'sync_playwright', lambda: _Launcher(proc.pid))
     monkeypatch.setattr(run, 'load_site', lambda name: _settings(name, tmp_path))
-    monkeypatch.setattr(run, 'browser_session', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(run, 'browser_session', browser_session)
     monkeypatch.setattr(embed, 'open_view', lambda *_args, **_kwargs: Page())
     threading.Thread(target=flip, daemon=True).start()
     report = _CancelReport()
@@ -1446,11 +1467,24 @@ def test_cancel_before_publish_leaves_no_csv(
     assert list(out.rglob('*.partial')) == []
 
 
-def test_close_on_stop_sees_the_live_driver_pid() -> None:
-    with sync_playwright() as pw:
-        pid = tableau._driver_pid(cast('Any', pw))
-        assert isinstance(pid, int)
-        os.kill(pid, 0)
+def test_cancel_kills_a_real_browser_mid_call() -> None:
+    stop = {'on': False}
+    with (
+        sync_playwright() as pw,
+        ui.capture(lambda _line: None, lambda: stop['on']),
+        tableau.close_on_stop(),
+    ):
+        try:
+            browser = tableau.launch_browser(pw, headless=True)
+        except SystemExit:
+            pytest.skip('no Chrome, Edge, or Playwright Chromium installed')
+        page = browser.new_page()
+        threading.Timer(0.5, lambda: stop.update(on=True)).start()
+        started = time.monotonic()
+        with pytest.raises(PlaywrightError, match='closed'):
+            page.wait_for_timeout(30_000)
+        assert time.monotonic() - started < 5
+        browser.close()
 
 
 def test_home_lists_sites_and_jobs_or_says_there_are_none(

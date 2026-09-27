@@ -28,7 +28,6 @@ from tabpull.tableau import (
     MissingSettingsError,
     UnknownSiteError,
     browser_session,
-    cancelled,
     close_on_stop,
     load_site,
 )
@@ -169,16 +168,18 @@ def _export_group(
     )
     try:
         context = browser_session(pw, settings)
-    except SystemExit as e:
-        if cancelled():
+    except (SystemExit, PlaywrightError) as e:
+        if ui.stopped():
             return _fail_all(site_jobs, 'Cancelled.', report)
+        if isinstance(e, PlaywrightError):
+            raise
         message = (
             e.code if isinstance(e.code, str) else 'could not open a browser session'
         )
         return _fail_all(site_jobs, message, report)
     failed: list[str] = []
     for job in site_jobs:
-        if cancelled():
+        if ui.stopped():
             failed.append(job.name)
             report.fail(job, 'Cancelled.')
             continue
@@ -190,13 +191,9 @@ def _export_group(
                 out_dir,
                 on_sheet=partial(report.sheet, job),
             )
-        except Exception as e:
-            if not cancelled() and not isinstance(
-                e, (JobError, PlaywrightError, OSError, UnicodeError, csv.Error)
-            ):
-                raise
+        except (JobError, PlaywrightError, OSError, UnicodeError, csv.Error) as e:
             failed.append(job.name)
-            report.fail(job, 'Cancelled.' if cancelled() else str(e))
+            report.fail(job, 'Cancelled.' if ui.stopped() else str(e))
         else:
             report.ok(job, paths)
     return failed
@@ -212,9 +209,9 @@ def run_jobs(jobs: Sequence[Job], out_dir: Path, report: Report) -> list[str]:
     failed: list[str] = []
     if not groups:
         return failed
-    with report.live(), sync_playwright() as pw, close_on_stop(pw):
+    with report.live(), sync_playwright() as pw, close_on_stop():
         for site_name, site_jobs in groups:
-            if cancelled():
+            if ui.stopped():
                 failed += _fail_all(site_jobs, 'Cancelled.', report)
                 continue
             failed += _export_group(pw, site_name, site_jobs, out_dir, report)

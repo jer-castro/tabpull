@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -28,11 +28,10 @@ SETTING_KEYS = (
 LOGIN_TIMEOUT_S = 300
 LOGIN_POLL_MS = 2000
 _CANCEL_POLL_S = 0.05
-_dead_pids: set[int] = set()
-_dead_lock = threading.Lock()
-_active_pid: contextvars.ContextVar[int | None] = contextvars.ContextVar(
-    'tabpull_driver_pid', default=None
+_browser_pids: contextvars.ContextVar[set[int] | None] = contextvars.ContextVar(
+    'tabpull_browser_pids', default=None
 )
+_browser_pids_lock = threading.Lock()
 BROWSER_CHANNELS = ('chrome', 'msedge', None)
 _APP = 'tabpull'
 _SITE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
@@ -254,9 +253,11 @@ def _chromium_install() -> str:
 def launch_browser(pw: Playwright, *, headless: bool) -> Browser:
     for channel in BROWSER_CHANNELS:
         try:
-            return pw.chromium.launch(channel=channel, headless=headless)
+            browser = pw.chromium.launch(channel=channel, headless=headless)
         except PlaywrightError:
             continue
+        _track(browser)
+        return browser
     msg = f'No Chrome or Edge found. Install one, or run: {_chromium_install()}'
     raise SystemExit(msg)
 
@@ -282,84 +283,72 @@ def session_valid(context: BrowserContext, settings: Settings) -> bool:
     return response.ok
 
 
-def _driver_pid(pw: Playwright) -> int | None:
-    impl = getattr(pw, '_impl_obj', None)
-    connection = getattr(impl, '_connection', None)
-    transport = getattr(connection, '_transport', None)
-    proc = getattr(transport, '_proc', None)
-    pid = getattr(proc, 'pid', None)
-    if isinstance(pid, int) and pid > 0:
-        return pid
-    return None
-
-
-def _kill_driver(pid: int) -> None:
-    with _dead_lock:
-        _dead_pids.add(pid)
+def _browser_pid(browser: Browser) -> int:
+    cdp = browser.new_browser_cdp_session()
     try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
+        info = cdp.send('SystemInfo.getProcessInfo')
+    finally:
+        cdp.detach()
+    return next(p['id'] for p in info['processInfo'] if p['type'] == 'browser')
+
+
+def _track(browser: Browser) -> None:
+    """Let close_on_stop kill this browser until it disconnects."""
+    pids = _browser_pids.get()
+    if pids is None:
         return
+    pid = _browser_pid(browser)
+    with _browser_pids_lock:
+        pids.add(pid)
 
+    def forget(_browser: Browser) -> None:
+        with _browser_pids_lock:
+            pids.discard(pid)
 
-def driver_killed() -> bool:
-    """True after close_on_stop killed this thread's Playwright driver."""
-    pid = _active_pid.get()
-    if pid is None:
-        return False
-    with _dead_lock:
-        return pid in _dead_pids
-
-
-def cancelled() -> bool:
-    return ui.stopped() or driver_killed()
+    browser.on('disconnected', forget)
 
 
 @contextmanager
-def close_on_stop(pw: Playwright) -> Iterator[None]:
-    """Kill the Playwright driver when ui.stopped() becomes true.
+def close_on_stop() -> Iterator[None]:
+    """Kill the browsers launch_browser starts in this block once ui.stopped() is true.
 
-    The sync API is not thread-safe, so the UI thread must not touch Page or
-    Browser. The watcher only os.kill()s the driver pid captured on this thread;
-    the blocked call then raises. page.close() after that kill hangs, so callers
-    skip it once driver_killed() is set.
+    The sync API is not thread-safe, so the watcher thread never touches a
+    Playwright object. It only SIGKILLs browser pids the worker thread read from
+    Chrome over CDP. The Playwright driver stays up, so the call blocked on the
+    worker raises TargetClosedError and later close() calls return at once.
     """
-    pid = _driver_pid(pw)
-    token = _active_pid.set(pid)
+    if _browser_pids.get() is not None or not ui.captures_stop():
+        yield
+        return
+    pids: set[int] = set()
+    token = _browser_pids.set(pids)
+    ctx = contextvars.copy_context()
     done = threading.Event()
-    watcher: threading.Thread | None = None
-    if pid is not None and ui.captures_stop():
-        ctx = contextvars.copy_context()
 
-        def watch() -> None:
-            while not done.is_set():
-                if ctx.run(ui.stopped):
-                    _kill_driver(pid)
-                    return
-                done.wait(_CANCEL_POLL_S)
+    def watch() -> None:
+        while not done.wait(_CANCEL_POLL_S):
+            if not ctx.run(ui.stopped):
+                continue
+            with _browser_pids_lock:
+                for pid in pids:
+                    with suppress(ProcessLookupError):
+                        os.kill(pid, signal.SIGKILL)
+                pids.clear()
 
-        watcher = threading.Thread(target=watch, name='tabpull-cancel', daemon=True)
-        watcher.start()
+    watcher = threading.Thread(target=watch, name='tabpull-cancel', daemon=True)
+    watcher.start()
     try:
         yield
     finally:
         done.set()
-        if watcher is not None:
-            watcher.join(timeout=1)
-        _active_pid.reset(token)
-
-
-def _close_browser(browser: Browser) -> None:
-    # Closing after the driver is killed waits forever.
-    if driver_killed():
-        return
-    browser.close()
+        watcher.join(timeout=1)
+        _browser_pids.reset(token)
 
 
 def _wait_for_sign_in(page: Page, context: BrowserContext, settings: Settings) -> bool:
     deadline = time.monotonic() + LOGIN_TIMEOUT_S
     while True:
-        if cancelled():
+        if ui.stopped():
             return True
         if time.monotonic() > deadline:
             msg = f'Gave up waiting for sign-in after {LOGIN_TIMEOUT_S}s.'
@@ -367,17 +356,17 @@ def _wait_for_sign_in(page: Page, context: BrowserContext, settings: Settings) -
         try:
             if session_valid(context, settings):
                 return False
-            if cancelled():
+            if ui.stopped():
                 return True
             page.wait_for_timeout(LOGIN_POLL_MS)
         except Exception:
-            if cancelled():
+            if ui.stopped():
                 return True
             raise
 
 
 def sso_login(pw: Playwright, settings: Settings) -> None:
-    with close_on_stop(pw):
+    with close_on_stop():
         browser = launch_browser(pw, headless=False)
         context = browser.new_context(
             storage_state=settings.auth_path if settings.auth_path.exists() else None,
@@ -387,8 +376,8 @@ def sso_login(pw: Playwright, settings: Settings) -> None:
         try:
             page.goto(settings.home_url)
         except Exception as e:
-            _close_browser(browser)
-            if cancelled():
+            browser.close()
+            if ui.stopped():
                 msg = 'Sign-in cancelled.'
                 raise SystemExit(msg) from e
             raise
@@ -399,20 +388,20 @@ def sso_login(pw: Playwright, settings: Settings) -> None:
         try:
             cancelled_login = _wait_for_sign_in(page, context, settings)
         except PlaywrightError as e:
-            _close_browser(browser)
-            if cancelled():
+            browser.close()
+            if ui.stopped():
                 msg = 'Sign-in cancelled.'
                 raise SystemExit(msg) from e
             msg = 'The browser closed before sign-in finished.'
             raise SystemExit(msg) from e
         if cancelled_login:
-            _close_browser(browser)
+            browser.close()
             msg = 'Sign-in cancelled.'
             raise SystemExit(msg)
         settings.auth_path.parent.mkdir(parents=True, exist_ok=True)
         context.storage_state(path=settings.auth_path)
         settings.auth_path.chmod(0o600)
-        _close_browser(browser)
+        browser.close()
         ui.emit(f'Saved browser session to {settings.auth_path}')
 
 
