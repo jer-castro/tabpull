@@ -1,6 +1,7 @@
 import json
 import re
 import tomllib
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -80,14 +81,61 @@ def parse_job(raw: object) -> Job:
         raise JobError(msg) from e
 
 
-def load_jobs(path: Path) -> list[Job]:
-    if not path.exists():
-        return []
-    raw_jobs = tomllib.loads(path.read_text(encoding='utf-8')).get('job', [])
+def _jobs_from_text(text: str) -> list[Job]:
+    raw_jobs = tomllib.loads(text).get('job', [])
     if not isinstance(raw_jobs, list):
         msg = '`job` must be an array of tables'
         raise JobError(msg)
     return [parse_job(raw) for raw in raw_jobs]
+
+
+def load_jobs(path: Path) -> list[Job]:
+    if not path.exists():
+        return []
+    return _jobs_from_text(path.read_text(encoding='utf-8'))
+
+
+def save_jobs(path: Path, jobs: Sequence[Job]) -> None:
+    names = [job.name for job in jobs]
+    if any(not name.strip() for name in names):
+        msg = 'job name is empty'
+        raise JobError(msg)
+    if dupes := sorted({name for name in names if names.count(name) > 1}):
+        msg = f'duplicate job names: {", ".join(dupes)}'
+        raise JobError(msg)
+    text = '\n'.join(job_to_toml(job) for job in jobs)
+    _jobs_from_text(text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scratch = path.with_name(path.name + '.tmp')
+    scratch.write_text(text, encoding='utf-8')
+    scratch.replace(path)
+
+
+def _unknown(names: Sequence[str], jobs: Sequence[Job]) -> JobError:
+    saved = ', '.join(job.name for job in jobs) or 'none'
+    return JobError(f'Unknown jobs: {", ".join(names)}. Saved jobs: {saved}')
+
+
+def update_job(path: Path, old_name: str, job: Job) -> list[Job]:
+    jobs = load_jobs(path)
+    index = next((i for i, saved in enumerate(jobs) if saved.name == old_name), None)
+    if index is None:
+        raise _unknown([old_name], jobs)
+    if job.name != old_name and any(saved.name == job.name for saved in jobs):
+        msg = f'A job named {job.name!r} already exists in {path}.'
+        raise JobError(msg)
+    jobs[index] = job
+    save_jobs(path, jobs)
+    return jobs
+
+
+def remove_jobs(path: Path, names: Sequence[str]) -> list[Job]:
+    jobs = load_jobs(path)
+    if unknown := sorted(set(names) - {job.name for job in jobs}):
+        raise _unknown(unknown, jobs)
+    kept = [job for job in jobs if job.name not in names]
+    save_jobs(path, kept)
+    return kept
 
 
 def _toml(value: object) -> str:
