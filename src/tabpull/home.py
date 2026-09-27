@@ -51,7 +51,7 @@ def file_flags(args: argparse.Namespace) -> list[str]:
     return flags
 
 
-def _sso_badge(name: str, server: str) -> str:
+def sso_badge(name: str, server: str) -> str:
     if server == '(incomplete)':
         return '[red]incomplete[/]'
     if load_site(name).auth_path.exists():
@@ -98,7 +98,7 @@ def _print_home(
                 f'[bold]{escape(name)}[/]',
                 escape(server),
                 escape(site),
-                _sso_badge(name, server),
+                sso_badge(name, server),
             )
         sites_body: Table | str = sites_table
     else:
@@ -138,7 +138,7 @@ def _print_home(
     )
 
 
-def _site_rows() -> list[list[str]]:
+def site_rows() -> list[list[str]]:
     rows = []
     for name in list_sites():
         try:
@@ -151,7 +151,7 @@ def _site_rows() -> list[list[str]]:
 
 
 def show_home(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> None:
-    sites = _site_rows()
+    sites = site_rows()
     jobs_error: str | None = None
     try:
         jobs = load_jobs(jobs_file)

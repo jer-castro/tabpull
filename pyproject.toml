@@ -12,6 +12,7 @@ dependencies = [
     "questionary==2.1.1",
     "rich==15.0.0",
     "tableauserverclient==0.41",
+    "textual==8.2.8",
 ]
 
 [project.urls]
@@ -117,6 +118,11 @@ inline-quotes = 'single'
 ]
 "dags/*.py" = [
   "F841", # Unused local variable
+]
+"src/tabpull/tui/*.py" = [
+  "PLR6301", # Textual calls compose/actions as methods
+  "FBT001", # Textual passes booleans positionally to callbacks and actions
+  "RUF012", # Textual reads BINDINGS as a class attribute
 ]
 "scripts/**/*.py" = [
   "INP001", # Check for implicit namespace usage
