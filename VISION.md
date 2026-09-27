@@ -11,8 +11,14 @@ It owns exactly one thing: the installed tabpull command that sets up a site, ad
 A person installs it with uv tool install and runs tabpull.
 setup, add, remove, run, and login are subcommands of that one command.
 Running a source file is not a supported way to use it.
-The command runs once and exits, so a scheduler outside the tool can call it.
-tabpull has no interval, no wait loop, no daemon, and no scheduler of its own.
+Each subcommand runs once and exits, so a scheduler outside the tool can call it.
+tabpull with no subcommand at a terminal opens an interactive screen, the face of that same command for a person who would rather not type flags.
+The screen lists sites and jobs and edits a saved job in place.
+It runs, adds, removes, sets up, and signs in through the same code as the subcommands, and run, add, setup, and login leave the screen to run that subcommand once and exit.
+It stays open only while a person uses it, and quitting it ends the command.
+tabpull with no subcommand and no terminal prints the sites and jobs and exits without waiting for keys.
+tabpull has no interval, no timer, no background process, no daemon, and no scheduler of its own.
+The interactive screen waits for a person's keys, never for a time.
 Importing its Python modules is not a supported interface.
 
 ## The crosstab a person would download
@@ -42,6 +48,7 @@ The loose name stays, because that is how a person finds a dashboard.
 add also accepts the site, the view, the sheets, and the filters as flags, and then writes the job without prompts.
 When those flags are absent, add still asks.
 add records the job and does not export until asked.
+The interactive screen edits a saved job's filters, parameters, sheets, view, site, and name, checks each change the way add checks its flags, and rewrites the jobs file.
 remove deletes named jobs and rewrites the jobs file.
 A terminal with no names asks which jobs to delete.
 No terminal and no names stops and asks for the names.
@@ -79,4 +86,4 @@ The proof is the file that was written and a control export that must differ.
 Row contents are not the proof.
 
 A change aligns when a person can install tabpull and, from any directory, export a named dashboard sheet, including a hidden one, as the UTF-8 crosstab they would download by hand, for the site that job names, with the filters and parameters they named.
-A change should be resisted when it adds a second way to run the tool, a scheduler, a supported Python import, a silent broad filter, or an export that is not that sheet's crosstab.
+A change should be resisted when it adds an entry point other than the tabpull command, gives the interactive screen its own copy of a subcommand's logic, makes the screen the only way to do something a subcommand does, adds a scheduler, a supported Python import, a silent broad filter, or an export that is not that sheet's crosstab.
