@@ -7,6 +7,11 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Jeremy Castro", email = "160854558+jer-castro@users.noreply.github.com" }]
 requires-python = ">=3.12"
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "playwright==1.63.0",
     "questionary==2.1.1",

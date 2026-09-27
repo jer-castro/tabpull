@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-d1dedc?style=flat-square" alt="MIT license" /></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.12%2B-8ab4ff?style=flat-square" alt="Python 3.12+" /></a>
+  <a href="https://github.com/jer-castro/tabpull/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-d1dedc?style=flat-square" alt="MIT license" /></a>
+  <a href="https://github.com/jer-castro/tabpull/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/python-3.12%2B-8ab4ff?style=flat-square" alt="Python 3.12+" /></a>
 </p>
 
 <p align="center">
