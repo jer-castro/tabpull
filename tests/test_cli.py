@@ -1,4 +1,5 @@
 import runpy
+import shlex
 import sys
 import tomllib
 from pathlib import Path
@@ -6,11 +7,9 @@ from typing import Any, Self, cast
 
 import pytest
 
-import crosstab
-import tableau
-import wizard
-from crosstab import Job, JobError
-from tableau import Settings, UnknownSiteError
+from tabpull import crosstab, tableau, wizard
+from tabpull.crosstab import Job, JobError
+from tabpull.tableau import Settings, UnknownSiteError
 
 
 def _xdg(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
@@ -76,9 +75,7 @@ def test_linux_paths_follow_xdg_and_ignore_the_working_directory(
     assert tableau.config_dir() == tmp_path / 'config' / 'tabpull'
     assert tableau.data_dir() == tmp_path / 'data' / 'tabpull'
     assert tableau.jobs_path() == tmp_path / 'config' / 'tabpull' / 'jobs.toml'
-    assert tableau.exports_dir() == tmp_path / 'data' / 'tabpull' / 'exports'
     assert tableau.jobs_path() != work / 'jobs.toml'
-    assert tableau.exports_dir() != work / 'exports'
 
 
 def test_os_paths_when_xdg_is_unset(
@@ -96,7 +93,7 @@ def test_os_paths_when_xdg_is_unset(
     assert (
         tableau.config_dir() == tmp_path / 'Library' / 'Application Support' / 'tabpull'
     )
-    assert tableau.data_dir() == tableau.config_dir()
+    assert tableau.data_dir() == tmp_path / '.local' / 'share' / 'tabpull'
 
     monkeypatch.setattr(tableau.sys, 'platform', 'win32')
     monkeypatch.setenv('APPDATA', str(tmp_path / 'Roaming'))
@@ -109,6 +106,62 @@ def test_os_paths_when_xdg_is_unset(
     monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'xdg-data'))
     assert tableau.config_dir() == tmp_path / 'xdg-config' / 'tabpull'
     assert tableau.data_dir() == tmp_path / 'xdg-data' / 'tabpull'
+
+
+def test_macos_auth_stays_and_old_exports_are_left_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv('XDG_CONFIG_HOME', raising=False)
+    monkeypatch.delenv('XDG_DATA_HOME', raising=False)
+    monkeypatch.setattr(tableau.Path, 'home', lambda: tmp_path)
+    monkeypatch.setattr(tableau.sys, 'platform', 'darwin')
+    config = tmp_path / 'Library' / 'Application Support' / 'tabpull'
+    (config / 'exports' / 'daily').mkdir(parents=True)
+    (config / 'exports' / 'daily' / 'sheet.csv').write_text('a\n', encoding='utf-8')
+    (config / 'auth').mkdir()
+    (config / 'auth' / 'finance.json').write_text('{}\n', encoding='utf-8')
+
+    assert tableau.site_auth_path('finance') == config / 'auth' / 'finance.json'
+    assert (config / 'auth' / 'finance.json').read_text(encoding='utf-8') == '{}\n'
+    exported = config / 'exports' / 'daily' / 'sheet.csv'
+    assert exported.read_text(encoding='utf-8') == 'a\n'
+    assert not (tmp_path / '.local' / 'share' / 'tabpull' / 'exports').exists()
+
+
+def test_linux_and_windows_auth_moves_into_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv('XDG_CONFIG_HOME', raising=False)
+    monkeypatch.delenv('XDG_DATA_HOME', raising=False)
+    monkeypatch.setattr(tableau.Path, 'home', lambda: tmp_path)
+
+    monkeypatch.setattr(tableau.sys, 'platform', 'linux')
+    data = tmp_path / '.local' / 'share' / 'tabpull'
+    (data / 'auth').mkdir(parents=True)
+    (data / 'auth' / 'finance.json').write_text('{}\n', encoding='utf-8')
+    (data / 'exports').mkdir()
+    (data / 'exports' / 'sheet.csv').write_text('a\n', encoding='utf-8')
+
+    auth = tmp_path / '.config' / 'tabpull' / 'auth' / 'finance.json'
+    assert tableau.site_auth_path('finance') == auth
+    assert auth.read_text(encoding='utf-8') == '{}\n'
+    assert not (data / 'auth').exists()
+    assert (data / 'exports' / 'sheet.csv').read_text(encoding='utf-8') == 'a\n'
+
+    monkeypatch.setattr(tableau.sys, 'platform', 'win32')
+    monkeypatch.setenv('APPDATA', str(tmp_path / 'Roaming'))
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'Local'))
+    local = tmp_path / 'Local' / 'tabpull'
+    (local / 'auth').mkdir(parents=True)
+    (local / 'auth' / 'finance.json').write_text('w\n', encoding='utf-8')
+    (local / 'exports').mkdir()
+    (local / 'exports' / 'sheet.csv').write_text('e\n', encoding='utf-8')
+
+    windows_auth = tmp_path / 'Roaming' / 'tabpull' / 'auth' / 'finance.json'
+    assert tableau.site_auth_path('finance') == windows_auth
+    assert windows_auth.read_text(encoding='utf-8') == 'w\n'
+    assert not (local / 'auth').exists()
+    assert (local / 'exports' / 'sheet.csv').read_text(encoding='utf-8') == 'e\n'
 
 
 def test_sites_keep_separate_tokens_and_sessions(
@@ -141,7 +194,7 @@ def test_sites_keep_separate_tokens_and_sessions(
     assert not beta.site
     assert beta.pat_secret == beta_value
     assert alpha.auth_path != beta.auth_path
-    assert alpha.auth_path == tmp_path / 'data' / 'tabpull' / 'auth' / 'alpha.json'
+    assert alpha.auth_path == tmp_path / 'config' / 'tabpull' / 'auth' / 'alpha.json'
     assert beta.auth_path.parent == alpha.auth_path.parent
     assert tableau.site_env_path('alpha').stat().st_mode & 0o777 == 0o600
     assert 'from-dotenv' not in tableau.site_env_path('alpha').read_text(
@@ -625,7 +678,7 @@ sheets = ["S"]
     )
     monkeypatch.setattr(crosstab, 'export_embed', export_embed)
 
-    code = crosstab.main(['--jobs', str(jobs), '--out', str(out), 'run'])
+    code = crosstab.main(['--jobs', str(jobs), 'run', '--out', str(out)])
     run_out = capsys.readouterr().out
 
     assert code == 1
@@ -637,12 +690,17 @@ sheets = ["S"]
     assert '✗ gone-job: No site named' in run_out
     assert hidden not in run_out
     assert f'Exporting 5 job(s) to {out}/' in run_out
+    assert 'done: 3/5 jobs exported' in run_out
+    assert f'tabpull run --jobs {jobs} --out {out} -- bad gone-job' in run_out
 
 
-def test_run_defaults_the_output_folder(
+def test_run_exports_into_the_working_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _xdg(monkeypatch, tmp_path)
+    work = tmp_path / 'work'
+    work.mkdir()
+    monkeypatch.chdir(work)
     jobs = tmp_path / 'jobs.toml'
     jobs.write_text(
         """
@@ -667,7 +725,105 @@ sheets = ["S"]
     )
 
     assert crosstab.main(['--jobs', str(jobs), 'run', 'a']) == 0
-    assert seen == [tableau.exports_dir()]
+    assert [path.resolve() for path in seen] == [work.resolve()]
+
+
+def test_failed_run_prints_a_rerun_command_that_selects_the_failed_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _xdg(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(
+        """
+[[job]]
+name = "-daily"
+site = "one"
+view = "W/V"
+sheets = ["S"]
+""",
+        encoding='utf-8',
+    )
+    fail = [True]
+
+    def export(
+        _context: object, _settings: object, job: Job, out_dir: Path
+    ) -> list[Path]:
+        if fail.pop():
+            msg = 'boom'
+            raise JobError(msg)
+        return [out_dir / f'{job.name}.csv']
+
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'load_site', lambda name: _settings(name, tmp_path))
+    monkeypatch.setattr(crosstab, 'browser_session', lambda _pw, _settings: object())
+    monkeypatch.setattr(crosstab, 'export_embed', export)
+
+    assert crosstab.main(['--jobs', str(jobs), '--out', 'reports', 'run']) == 1
+    help_line = capsys.readouterr().out.splitlines()[-1]
+    rerun = help_line.split('rerun them: ', 1)[1]
+
+    fail.append(False)
+    assert crosstab.main(shlex.split(rerun)[1:]) == 0
+    assert 'done: 1/1 jobs exported' in capsys.readouterr().out
+
+
+def test_home_lists_sites_and_jobs_or_says_there_are_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _xdg(monkeypatch, tmp_path)
+    jobs = tmp_path / 'jobs.toml'
+
+    assert crosstab.main(['--jobs', str(jobs)]) == 0
+    empty = capsys.readouterr().out
+    assert 'sites: 0 configured' in empty
+    assert 'jobs: 0 saved' in empty
+    assert 'tabpull setup' in empty
+
+    tableau.save_site('finance', _site_values())
+    jobs.write_text(
+        """
+[[job]]
+name = "-daily"
+site = "finance"
+view = "Sales, Inc/Overview"
+sheets = ["A", "B"]
+""",
+        encoding='utf-8',
+    )
+    assert crosstab.main(['--jobs', str(jobs)]) == 0
+    text = capsys.readouterr().out
+    assert (
+        'sites[1]{name,server,site}:\n  finance,"https://tableau.example",finance'
+        in text
+    )
+    assert (
+        'jobs[1]{name,site,view,sheets}:\n  "-daily",finance,"Sales, Inc/Overview",2'
+        in text
+    )
+    assert f'tabpull run <name> --jobs {jobs}' in text
+
+    assert crosstab.main(['--jobs', str(jobs), '--out', 'reports']) == 0
+    add_line = next(
+        line for line in capsys.readouterr().out.splitlines() if 'tabpull add' in line
+    )
+    assert '--out' not in add_line
+    add_cmd = add_line.split('`')[1].replace('<Workbook/View>', 'W/V')
+    args, extra = crosstab._parser()[0].parse_known_args(shlex.split(add_cmd)[1:])
+    assert (args.command, str(args.jobs), extra) == ('add', str(jobs), [])
+
+
+def test_unknown_subcommand_flag_prints_that_commands_usage(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        crosstab.main(['run', '--stat', 'x'])
+    text = capsys.readouterr().out
+
+    assert exc.value.code == 2
+    assert 'error: unrecognized arguments: --stat' in text
+    assert 'usage: tabpull run' in text
+    assert '--out' in text
 
 
 def test_several_sites_require_a_flag_when_there_is_no_terminal(
@@ -766,7 +922,7 @@ def test_setup_writes_each_site_under_xdg(
     assert third_value not in text
     assert 'tabpull add --site finance' in text
     assert str(tableau.jobs_path()) in text
-    assert str(tableau.exports_dir()) in text
+    assert 'folder you run tabpull from' in text
     assert first_value not in (work / '.env').read_text(encoding='utf-8')
 
 
@@ -774,6 +930,6 @@ def test_source_files_point_at_the_command(capsys: pytest.CaptureFixture[str]) -
     root = Path(__file__).resolve().parents[1]
     for name in ('crosstab.py', 'wizard.py'):
         with pytest.raises(SystemExit) as exc:
-            runpy.run_path(str(root / 'src' / name), run_name='__main__')
+            runpy.run_path(str(root / 'src' / 'tabpull' / name), run_name='__main__')
         assert exc.value.code == 2
         assert 'tabpull' in capsys.readouterr().err

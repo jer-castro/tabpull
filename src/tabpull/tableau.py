@@ -1,12 +1,13 @@
 """Tableau settings, PAT sign-in for the REST API, and the SSO browser session.
 
-Tokens and the jobs file live in the config directory. SSO cookies and exports live in
-the data directory. Those are the XDG base directories when `XDG_CONFIG_HOME` or
-`XDG_DATA_HOME` is set, and the usual OS folders otherwise.
+The config directory holds site tokens, SSO cookies, and the jobs file. It is the XDG
+config directory when `XDG_CONFIG_HOME` is set, and the usual OS folder otherwise.
+Exports go to the working directory, so they are not managed here.
 """
 
 import os
 import re
+import shutil
 import sys
 import time
 from collections.abc import Iterator
@@ -28,6 +29,7 @@ SETTING_KEYS = (
 LOGIN_TIMEOUT_S = 300
 LOGIN_POLL_MS = 2000
 BROWSER_CHANNELS = ('chrome', 'msedge', None)
+CHROMIUM_INSTALL = 'uvx --from tabpull playwright install chromium'
 _APP = 'tabpull'
 _SITE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 
@@ -74,7 +76,7 @@ def _rooted(env_var: str, unix_default: Path, windows: Path, mac: Path) -> Path:
 
 
 def config_dir() -> Path:
-    """Site tokens and the jobs file."""
+    """Site tokens, SSO cookies, and the jobs file."""
     return _rooted(
         'XDG_CONFIG_HOME',
         Path.home() / '.config',
@@ -84,21 +86,50 @@ def config_dir() -> Path:
 
 
 def data_dir() -> Path:
-    """SSO cookies and exports."""
+    """XDG data directory: `XDG_DATA_HOME`, else ~/.local/share on macOS and Linux, else LocalAppData.
+
+    New exports are not stored here. Old auth cookies are at `_legacy_data_dir`.
+    """
+    share = Path.home() / '.local' / 'share'
     return _rooted(
         'XDG_DATA_HOME',
-        Path.home() / '.local' / 'share',
+        share,
         _windows_dir('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'),
-        Path.home() / 'Library' / 'Application Support',
+        share,
     )
+
+
+def _legacy_data_dir() -> Path:
+    """Where auth cookies lived before they moved next to the jobs file.
+
+    macOS used Application Support, which is already the config directory. Other
+    systems used the data directory. `XDG_DATA_HOME` was honored on every OS.
+    """
+    if os.environ.get('XDG_DATA_HOME'):
+        return data_dir()
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library' / 'Application Support' / _APP
+    return data_dir()
+
+
+def _move_dir(source: Path, dest: Path) -> None:
+    """Move a directory once. Leave it in place when the destination already exists."""
+    if source == dest or not source.is_dir() or dest.exists():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(source, dest)
+
+
+def _migrate_layout() -> None:
+    """Move auth cookies into the config directory.
+
+    Anything else in the old folder, including old exports, stays where it is.
+    """
+    _move_dir(_legacy_data_dir() / 'auth', config_dir() / 'auth')
 
 
 def jobs_path() -> Path:
     return config_dir() / 'jobs.toml'
-
-
-def exports_dir() -> Path:
-    return data_dir() / 'exports'
 
 
 def site_env_path(name: str) -> Path:
@@ -106,7 +137,8 @@ def site_env_path(name: str) -> Path:
 
 
 def site_auth_path(name: str) -> Path:
-    return data_dir() / 'auth' / f'{check_site_name(name)}.json'
+    _migrate_layout()
+    return config_dir() / 'auth' / f'{check_site_name(name)}.json'
 
 
 def list_sites() -> list[str]:
@@ -246,7 +278,7 @@ def launch_browser(pw: Playwright, *, headless: bool) -> Browser:
             return pw.chromium.launch(channel=channel, headless=headless)
         except PlaywrightError:
             continue
-    msg = 'No Chrome or Edge found. Install one, or run: uv run playwright install chromium'
+    msg = f'No Chrome or Edge found. Install one, or run: {CHROMIUM_INSTALL}'
     raise SystemExit(msg)
 
 

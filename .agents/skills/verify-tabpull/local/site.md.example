@@ -1,0 +1,7 @@
+# Sandbox site
+
+Copy this file to `site.md` in this directory. `site.md` is gitignored.
+
+- Pod: `<pod>.online.tableau.com`
+- Tableau site: `<site-content-url>`
+- View URL: `https://<pod>.online.tableau.com/#/site/<site-content-url>/views/<Workbook>/<View>`

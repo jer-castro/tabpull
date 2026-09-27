@@ -7,7 +7,7 @@ This directory is the maintained source for verifying what a user of `tabpull` s
 - Repo root is the working directory, and `uv sync` has run.
 - `verify.py doctor` reports `ok` on every settings, session, and jobs line.
 - `RUN=$(date +%Y%m%d-%H%M%S); E=.verify/$RUN`. Every drive uses `--jobs $E/<feature>/jobs.toml --out $E/<feature>/exports`.
-- Never write to the config-directory jobs file or the data-directory exports folder. The defaults are not the working directory.
+- Never write to the config-directory jobs file. Exports default to the working directory, so always pass `--out` or the repo root fills with job folders.
 
 ## Driving conventions
 

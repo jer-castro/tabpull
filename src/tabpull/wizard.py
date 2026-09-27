@@ -17,10 +17,9 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 from tableauserverclient.server.endpoint.exceptions import TableauError
 
-from tableau import (
+from tabpull.tableau import (
     Settings,
     check_site_name,
-    exports_dir,
     home_url,
     jobs_path,
     parse_tableau_url,
@@ -154,7 +153,7 @@ def finish(next_step: str) -> None:
     for item in _run.skipped:
         warn(item)
     note(f'Jobs default to {jobs_path()}.')
-    note(f'Exports default to {exports_dir()}.')
+    note('Exports go to the folder you run tabpull from, or --out.')
     print(f'\n  Next: {BOLD}{next_step}{RESET}\n')
 
 
@@ -202,7 +201,7 @@ def _site_stage(preset: str | None) -> tuple[str, str, str]:
 def _pat_stage(name: str, server: str, site: str) -> Settings:
     stage('Personal access token')
     say(
-        'The token lets the exporter find views and pull published sheets without a browser.'
+        'The token lets tabpull find views. Exporting a sheet uses the browser sign-in in the next step.'
     )
     open_url(home_url(server, site))
     step('Click your profile picture (top right) → My Account Settings.')

@@ -1,6 +1,6 @@
 # Embed export
 
-`run` opens each job's view in a headless browser signed in as the site that job names, sets its parameters and filters, and writes one UTF-8 CSV per listed sheet to `<out>/<job>/<sheet>.csv` (both names slugged, so `B Real Sheet` becomes `B_Real_Sheet.csv`), the same content as Download > Crosstab > CSV. The default output folder is the data-directory `exports/`. `--out` replaces it for one run.
+`run` opens each job's view in a headless browser signed in as the site that job names, sets its parameters and filters, and writes one UTF-8 CSV per listed sheet to `<out>/<job>/<sheet>.csv` (both names slugged, so `B Real Sheet` becomes `B_Real_Sheet.csv`), the same content as Download > Crosstab > CSV. The default output folder is the working directory. `--out` replaces it for one run. The run ends with `done: <ok>/<total> jobs exported`, plus a `help:` rerun command when any job failed.
 
 ## Sub-features
 

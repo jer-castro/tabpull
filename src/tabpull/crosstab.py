@@ -3,8 +3,10 @@
 Commands:
   setup  save a site's personal access token and SSO session
   add    record a job (prompts, or flags for the site, view, sheets, and filters)
-  run    export jobs from the jobs file
+  run    export jobs from the jobs file into the current folder
   login  refresh a site's SSO session
+
+Run tabpull with no command to see configured sites and saved jobs.
 """
 
 import argparse
@@ -12,7 +14,9 @@ import codecs
 import csv
 import io
 import json
+import os
 import re
+import shlex
 import string
 import sys
 import tomllib
@@ -21,21 +25,21 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NoReturn, TypedDict
 
 import tableauserverclient as tsc
 from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-import wizard
-from tableau import (
+from tabpull import wizard
+from tabpull.cli import VERSION_FLAGS, version
+from tabpull.tableau import (
     MissingSettingsError,
     Settings,
     UnknownSiteError,
     browser_session,
     check_site_name,
-    exports_dir,
     jobs_path,
     list_sites,
     load_site,
@@ -427,15 +431,19 @@ def _fail(name: str, message: str) -> None:
     print(f'  ✗ {name}: {message.partition("\n")[0] or message}')
 
 
+def _fail_all(site_jobs: Sequence[Job], message: str) -> list[str]:
+    for job in site_jobs:
+        _fail(job.name, message)
+    return [job.name for job in site_jobs]
+
+
 def _export_group(
     pw: Playwright, site_name: str, site_jobs: Sequence[Job], out_dir: Path
-) -> int:
+) -> list[str]:
     try:
         settings = load_site(site_name)
     except (UnknownSiteError, MissingSettingsError, ValueError) as e:
-        for job in site_jobs:
-            _fail(job.name, str(e))
-        return len(site_jobs)
+        return _fail_all(site_jobs, str(e))
     print(
         f'  site {settings.name}: {settings.server}, site {settings.site or "(default)"}'
     )
@@ -445,23 +453,21 @@ def _export_group(
         message = (
             e.code if isinstance(e.code, str) else 'could not open a browser session'
         )
-        for job in site_jobs:
-            _fail(job.name, message)
-        return len(site_jobs)
-    failed = 0
+        return _fail_all(site_jobs, message)
+    failed = []
     for job in site_jobs:
         try:
             paths = export_embed(context, settings, job, out_dir)
         except (JobError, PlaywrightError, OSError, UnicodeError, csv.Error) as e:
-            failed += 1
+            failed.append(job.name)
             _fail(job.name, str(e))
         else:
             print(f'  ✓ {job.name}: {", ".join(map(str, paths))}')
     return failed
 
 
-def run_jobs(jobs: Sequence[Job], out_dir: Path) -> int:
-    """Export every job, carrying on past failures. Returns the number of failed jobs."""
+def run_jobs(jobs: Sequence[Job], out_dir: Path) -> list[str]:
+    """Export every job, carrying on past failures. Returns the failed job names."""
     groups: list[tuple[str, list[Job]]] = []
     for job in jobs:
         if groups and groups[-1][0] == job.site:
@@ -469,8 +475,8 @@ def run_jobs(jobs: Sequence[Job], out_dir: Path) -> int:
         else:
             groups.append((job.site, [job]))
     if not groups:
-        return 0
-    failed = 0
+        return []
+    failed = []
     with sync_playwright() as pw:
         for site_name, site_jobs in groups:
             failed += _export_group(pw, site_name, site_jobs, out_dir)
@@ -781,44 +787,180 @@ def _cmd_add(args: argparse.Namespace, jobs_file: Path) -> None:
         raise SystemExit(message) from e
 
 
+def _file_flags(args: argparse.Namespace) -> list[str]:
+    """The --jobs/--out flags this invocation used, to carry into suggested commands."""
+    flags = []
+    if args.jobs:
+        flags += ['--jobs', str(args.jobs)]
+    if args.out:
+        flags += ['--out', str(args.out)]
+    return flags
+
+
 def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
     try:
         jobs = load_jobs(jobs_file)
     except (JobError, tomllib.TOMLDecodeError, OSError) as e:
         msg = f'{jobs_file}: {e}'
         raise SystemExit(msg) from e
-    unknown = set(args.names) - {job.name for job in jobs}
-    if unknown or not jobs:
+    if not jobs:
+        msg = f'No jobs in {jobs_file}. Run: tabpull add'
+        raise SystemExit(msg)
+    if unknown := set(args.names) - {job.name for job in jobs}:
         msg = (
-            f'Unknown jobs: {", ".join(sorted(unknown))}'
-            if unknown
-            else f'No jobs in {jobs_file}. Run: tabpull add'
+            f'Unknown jobs: {", ".join(sorted(unknown))}. '
+            f'Saved jobs: {", ".join(job.name for job in jobs)}'
         )
         raise SystemExit(msg)
     selected = [job for job in jobs if not args.names or job.name in args.names]
     print(f'Exporting {len(selected)} job(s) to {out_dir}/')
-    return 1 if run_jobs(selected, out_dir) else 0
+    failed = run_jobs(selected, out_dir)
+    print(f'done: {len(selected) - len(failed)}/{len(selected)} jobs exported')
+    if not failed:
+        return 0
+    # Flags before `--` so a job named like an option (`-daily`, `-h`) stays a name.
+    rerun = shlex.join(['tabpull', 'run', *_file_flags(args), '--', *failed])
+    print(f'help: fix the failed jobs, then rerun them: {rerun}')
+    return 1
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+_TOON_NUMBER = re.compile(r'^[+-]?[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$', re.IGNORECASE)
+_TOON_QUOTE = re.compile(r'[,:"\\\[\]{}\x00-\x1f]')
+
+
+def _toon(value: object) -> str:
+    """One TOON value, quoted only when the spec requires it (comma delimiter)."""
+    text = str(value)
+    if isinstance(value, int):
+        return text
+    if (
+        text in {'', 'true', 'false', 'null'}
+        or text != text.strip(' \t')
+        or text.startswith(('-', '#'))
+        or _TOON_NUMBER.match(text)
+        or _TOON_QUOTE.search(text)
+    ):
+        return json.dumps(text, ensure_ascii=False)
+    return text
+
+
+def _toon_table(
+    name: str, fields: Sequence[str], rows: Sequence[Sequence[object]]
+) -> list[str]:
+    head = f'{name}[{len(rows)}]{{{",".join(fields)}}}:'
+    return [head, *('  ' + ','.join(map(_toon, row)) for row in rows)]
+
+
+def _home_path(path: Path | str) -> str:
+    text = os.path.normpath(Path(path).absolute())
+    home = str(Path.home())
+    return '~' + text[len(home) :] if text.startswith(home + os.sep) else text
+
+
+def _site_rows() -> list[list[str]]:
+    rows = []
+    for name in list_sites():
+        try:
+            settings = load_site(name)
+        except (MissingSettingsError, ValueError):
+            rows.append([name, '(incomplete)', ''])
+        else:
+            rows.append([name, settings.server, settings.site])
+    return rows
+
+
+def _cmd_home(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> None:
+    """What an agent or a person needs first: sites, jobs, and where files go."""
+    lines = [
+        f'bin: {_toon(_home_path(sys.argv[0]))}',
+        'description: Export Tableau dashboard sheet crosstabs to CSV',
+        f'jobs_file: {_toon(_home_path(jobs_file))}',
+        f'out: {_toon(_home_path(out_dir))}',
+    ]
+    help_lines = []
+    if sites := _site_rows():
+        lines += _toon_table('sites', ('name', 'server', 'site'), sites)
+    else:
+        lines.append('sites: 0 configured')
+        help_lines.append('Run `tabpull setup` to connect a Tableau site')
+    try:
+        jobs = load_jobs(jobs_file)
+    except (JobError, tomllib.TOMLDecodeError, OSError) as e:
+        lines.append(f'jobs: {_toon(f"unreadable: {e}")}')
+        jobs = []
+    else:
+        if jobs:
+            rows = [[j.name, j.site, j.view, len(j.sheets)] for j in jobs]
+            lines += _toon_table('jobs', ('name', 'site', 'view', 'sheets'), rows)
+        else:
+            lines.append('jobs: 0 saved')
+    quoted = shlex.join(_file_flags(args))
+    flags = f' {quoted}' if quoted else ''
+    if jobs:
+        help_lines += [
+            f'Run `tabpull run{flags}` to export every job into the out folder',
+            f'Run `tabpull run <name>{flags}` to export one job',
+        ]
+    if sites:
+        # `add` has no --out, so carry only --jobs.
+        jobs_flag = f' --jobs {shlex.quote(str(args.jobs))}' if args.jobs else ''
+        help_lines.append(
+            f'Run `tabpull add --view <Workbook/View> --sheet "<sheet>"{jobs_flag}` to save a job'
+        )
+    lines.append(f'help[{len(help_lines)}]:')
+    lines += [f'  {line}' for line in help_lines]
+    print('\n'.join(lines))
+
+
+class _Parser(argparse.ArgumentParser):
+    """Usage errors on stdout with this command's usage, so the fix is one step."""
+
+    def error(self, message: str) -> NoReturn:
+        print(f'error: {message}')
+        print(self.format_usage().rstrip())
+        print(f'help: run `{self.prog} --help` for flags and examples')
+        sys.exit(2)
+
+
+def _add_file_flags(
+    parser: argparse.ArgumentParser, *, out: bool, default: object
+) -> None:
     parser.add_argument(
         '--jobs',
         type=Path,
+        default=default,
         help='jobs file for this run (default: the config directory jobs.toml)',
     )
-    parser.add_argument(
-        '--out',
-        type=Path,
-        help='output folder for this run (default: the data directory exports folder)',
+    if out:
+        parser.add_argument(
+            '--out',
+            type=Path,
+            default=default,
+            help='output folder for this run (default: the current folder)',
+        )
+
+
+def _parser() -> tuple[_Parser, dict[str, _Parser]]:
+    parser = _Parser(
+        prog='tabpull',
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    commands = parser.add_subparsers(dest='command', required=True)
+    parser.add_argument(*VERSION_FLAGS, action='version', version=version())
+    _add_file_flags(parser, out=True, default=None)
+    commands = parser.add_subparsers(dest='command')
     setup = commands.add_parser('setup', help='save a site token and browser session')
     setup.add_argument('--site', help='local name for this site; each job refers to it')
     add = commands.add_parser(
-        'add', help='save a job, prompting unless view and sheets are flags'
+        'add',
+        help='save a job, prompting unless view and sheets are flags',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  tabpull add
+  tabpull add --view SalesWorkbook/Overview --sheet "Order Detail" --name daily
+  tabpull add --view SalesWorkbook/Overview --sheet Totals \\
+    --filter "Region=West|Central" --filter "Order Date=2026-09-01..2026-09-25"
+""",
     )
     add.add_argument('--site', help='local site name from tabpull setup')
     add.add_argument('--view', help='Workbook/View, or a view URL')
@@ -844,36 +986,64 @@ def _parser() -> argparse.ArgumentParser:
         metavar='NAME=VALUE',
         help='parameter Name=value (repeatable)',
     )
-    run = commands.add_parser('run', help='export jobs')
+    _add_file_flags(add, out=False, default=argparse.SUPPRESS)
+    run = commands.add_parser(
+        'run',
+        help='export jobs into the current folder',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""writes <out>/<job>/<sheet>.csv, spaces in names become _
+
+examples:
+  tabpull run
+  tabpull run daily-west
+  tabpull run daily-west --out ~/reports
+""",
+    )
     run.add_argument('names', nargs='*', help='only these jobs (default: all)')
+    _add_file_flags(run, out=True, default=argparse.SUPPRESS)
     login = commands.add_parser('login', help='refresh a site SSO browser session')
     login.add_argument(
         '--site', help='local site name (default: the only configured site)'
     )
-    return parser
+    return parser, commands.choices
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser, commands = _parser()
+    args, extra = parser.parse_known_args(argv)
+    if extra:
+        (commands.get(args.command) or parser).error(
+            f'unrecognized arguments: {" ".join(extra)}'
+        )
     jobs_file = args.jobs or jobs_path()
-    out_dir = args.out or exports_dir()
+    out_dir = args.out or Path()
     match args.command:
         case 'setup':
             wizard.main(args.site)
-            return 0
         case 'login':
             _cmd_login(args.site)
-            return 0
         case 'add':
             _cmd_add(args, jobs_file)
-            return 0
         case 'run':
             return _cmd_run(args, jobs_file, out_dir)
+        case _:
+            _cmd_home(args, jobs_file, out_dir)
     return 0
 
 
 def cli() -> None:
-    sys.exit(main())
+    """Print a failure as `error: ...` on stdout, where agents read the rest."""
+    try:
+        code = main()
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        code = 130
+    except SystemExit as e:
+        if not isinstance(e.code, str):
+            raise
+        print(f'error: {e.code}')
+        code = 1
+    sys.exit(code)
 
 
 if __name__ == '__main__':

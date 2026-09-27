@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'src'))
 
 from playwright.sync_api import Browser, BrowserContext, sync_playwright
 
-from crosstab import (
+from tabpull.crosstab import (
     APPLY_JS,
     INSPECT_JS,
     Job,
@@ -27,7 +27,7 @@ from crosstab import (
     load_jobs,
     open_view,
 )
-from tableau import (
+from tabpull.tableau import (
     MissingSettingsError,
     Settings,
     jobs_path,

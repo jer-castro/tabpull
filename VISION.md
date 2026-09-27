@@ -52,8 +52,9 @@ Several sites are the same command, not a second tool.
 
 ## Files stay in a conventional place
 
-The token, the SSO cookies, the jobs file, and the exports live in a small set of conventional directories, the XDG base directories or the equivalent on each system.
+The token, the SSO cookies, and the jobs file live in the config directory, the XDG base directory or the equivalent on each system.
 They do not follow the working directory.
+Exports land in the working directory, where the person running the tool expects them.
 A flag may point one run at a different jobs file or a different output folder.
 Those locations are documented, and deleting them removes the tool's files from the machine.
 The tool may print the server and the site, and it does not print the token.

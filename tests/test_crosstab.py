@@ -5,8 +5,8 @@ from typing import Any, Self, cast
 import pytest
 from playwright.sync_api import Error as PlaywrightError
 
-import crosstab
-from crosstab import (
+from tabpull import crosstab
+from tabpull.crosstab import (
     Job,
     JobError,
     RangeFilter,
@@ -19,7 +19,7 @@ from crosstab import (
     resolved_filters,
     view_from_flag,
 )
-from tableau import Settings, parse_tableau_url
+from tabpull.tableau import Settings, parse_tableau_url
 
 
 def test_normalize_csv_rewrites_tableau_utf16_tsv_as_utf8_csv() -> None:

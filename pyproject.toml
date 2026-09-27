@@ -3,24 +3,29 @@ name = "tabpull"
 version = "0.1.0"
 description = "Export Tableau dashboard sheet crosstabs with filters"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Jeremy Castro", email = "160854558+jer-castro@users.noreply.github.com" }]
-requires-python = "==3.12.*"
+requires-python = ">=3.12"
 dependencies = [
     "playwright==1.63.0",
     "tableauserverclient==0.41",
 ]
 
+[project.urls]
+Homepage = "https://github.com/jer-castro/tabpull"
+Repository = "https://github.com/jer-castro/tabpull"
+Issues = "https://github.com/jer-castro/tabpull/issues"
+
 [project.scripts]
-tabpull = "crosstab:cli"
+tabpull = "tabpull.cli:main"
 
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-py-modules = ["crosstab", "tableau", "wizard"]
-package-dir = {"" = "src"}
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.uv]
 
@@ -132,8 +137,8 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ty.environment]
-extra-paths = [".", "src"]
+extra-paths = ["src"]
 
 [tool.pytest.ini_options]
-pythonpath = [".", "src"]
+pythonpath = ["src"]
 testpaths = ["tests"]

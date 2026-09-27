@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/hero.svg" alt="tabpull - crosstab any sheet, skip the workbook" width="100%" />
+  <img src="https://raw.githubusercontent.com/jer-castro/tabpull/main/assets/hero.svg" alt="tabpull - crosstab any sheet, skip the workbook" width="100%" />
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-d1dedc?style=flat-square" alt="MIT license" /></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.12-8ab4ff?style=flat-square" alt="Python 3.12" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.12%2B-8ab4ff?style=flat-square" alt="Python 3.12+" /></a>
 </p>
 
 <p align="center">
@@ -42,13 +42,11 @@ Dashboard sheets go through the Tableau Embedding API (`exportCrosstabAsync`) in
 
 ## Install
 
-From a checkout of this repo:
-
 ```sh
-uv tool install .
+uv tool install tabpull
 ```
 
-That installs one `tabpull` command. `setup`, `add`, `run`, and `login` are subcommands. From a checkout, `uv run tabpull` is the same command.
+That installs one `tabpull` command. `setup`, `add`, `run`, and `login` are subcommands.
 
 ## Setup
 
@@ -61,11 +59,12 @@ The wizard asks for that name (unless you passed `--site`), a dashboard URL, and
 
 Run it again for another Tableau server or site. Each site keeps its own token and browser session. Re-running a name keeps the current values when you press Enter.
 
-The browser is your installed Chrome, then Edge. If neither is installed, run `uv run playwright install chromium`. tabpull does not download a browser while Chrome or Edge is already there.
+The browser is your installed Chrome, then Edge. If neither is installed, run `uvx --from tabpull playwright install chromium`. tabpull does not download a browser while Chrome or Edge is already there.
 
 ## Use
 
 ```sh
+tabpull                             # sites, saved jobs, and where exports go
 tabpull add                         # prompts: search a view or paste its URL, pick sheets and filters
 tabpull add --site finance \
   --view SalesWorkbook/Overview \
@@ -74,11 +73,14 @@ tabpull add --site finance \
   --filter "Order Date=2026-09-01..2026-09-25 @Totals" \
   --param "Top N=25" \
   --name daily-west                 # same result, no prompts
-tabpull run                         # export every job
+tabpull run                         # export every job into the current folder
 tabpull run daily-west              # only some jobs
 tabpull login                       # refresh SSO for the only site
 tabpull login --site finance        # refresh one site when several are configured
+tabpull --version
 ```
+
+`tabpull` with no command prints the configured sites, the saved jobs, the jobs file, the output folder, and the next commands to try, in [TOON](https://toonformat.dev/). Errors, including an unknown flag, print `error: ...` on stdout with the fix or the command's usage. A usage error exits 2 and any other failure exits 1.
 
 `add` saves the job and prints the `run` command. It does not export. With `--view` and at least one `--sheet`, `add` writes the job and does not prompt. Leave those flags off and it asks.
 
@@ -86,31 +88,32 @@ Flag `add` still opens the view far enough to refuse a story, with the same mess
 
 `--filter` is `Field=a|b` or `Field=min..max`, and ` @Sheet` names the worksheet. A filter with no sheet is applied on the first sheet in the job, and tabpull prints that. With one configured site, `--site` can be omitted. With several, pass `--site` or pick one at the prompt.
 
-`run` keeps going when one job fails and exits non-zero if any did. Each job uses the site it names. When that site's SSO session is missing or expired, tabpull opens the sign-in window if you're at a terminal, and otherwise exits and tells you to run `tabpull login --site <name>`. Crosstab CSVs are rewritten from Tableau's UTF-16 tab-separated format to plain UTF-8 CSV.
+`run` keeps going when one job fails, then prints `done: <ok>/<total> jobs exported`. If any job failed it prints the `tabpull run` command that reruns only those and exits 1. Each job uses the site it names. When that site's SSO session is missing or expired, tabpull opens the sign-in window if you're at a terminal, and otherwise exits and tells you to run `tabpull login --site <name>`. Crosstab CSVs are rewritten from Tableau's UTF-16 tab-separated format to plain UTF-8 CSV.
 
-Point one run at another jobs file or output folder:
+`run` writes `<job>/<sheet>.csv` under the folder you run it from (spaces in names become `_`). Point one run at another jobs file or output folder, before or after the subcommand:
 
 ```sh
-tabpull --jobs ./jobs.toml --out ./exports run daily-west
+tabpull run daily-west --jobs ./jobs.toml --out ./exports
 ```
 
 ## Where files live
 
-Tokens, cookies, jobs, and exports stay in the config and data directories. They stay put when you change the working directory. Deleting those two directories removes tabpull's files from the machine. A `.env` file and `TABLEAU_*` environment variables are not read.
+Tokens, cookies, and jobs stay in the config directory, and they stay put when you change the working directory. Exports go to the working directory, or `--out`. Deleting the config directory removes tabpull's settings from the machine. A `.env` file and `TABLEAU_*` environment variables are not read.
 
 | | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| Config (site tokens, `jobs.toml`) | `$XDG_CONFIG_HOME/tabpull` or `~/.config/tabpull` | `~/Library/Application Support/tabpull` | `%APPDATA%\tabpull` |
-| Data (SSO cookies, `exports/`) | `$XDG_DATA_HOME/tabpull` or `~/.local/share/tabpull` | `~/Library/Application Support/tabpull` | `%LOCALAPPDATA%\tabpull` |
+| Config (site tokens, SSO cookies, `jobs.toml`) | `$XDG_CONFIG_HOME/tabpull` or `~/.config/tabpull` | `~/Library/Application Support/tabpull` | `%APPDATA%\tabpull` |
 
-`XDG_CONFIG_HOME` and `XDG_DATA_HOME` win on every OS when they are set.
+`XDG_CONFIG_HOME` wins on every OS when it is set.
 
 ```text
 <config>/tabpull/sites/<name>.env     server, Tableau site, token name, token secret
 <config>/tabpull/jobs.toml
-<data>/tabpull/auth/<name>.json       SSO cookies; mode 600
-<data>/tabpull/exports/<job>/<sheet>.csv
+<config>/tabpull/auth/<name>.json     SSO cookies; mode 600
+./<job>/<sheet>.csv                   exports, relative to where you ran tabpull
 ```
+
+Older versions kept exports in the data directory (`$XDG_DATA_HOME/tabpull/exports`, `~/.local/share/tabpull/exports`, or `%LOCALAPPDATA%\tabpull\exports`) and, on macOS, in `~/Library/Application Support/tabpull/exports`. tabpull no longer touches those folders, so move or delete them yourself. On Linux and Windows, SSO cookies still move from the data directory into the config directory on the next run.
 
 The token secret is not printed. Setup and login print the server and the Tableau site.
 
@@ -138,6 +141,8 @@ Dates written as `YYYY-MM-DD` or `M/D/YYYY`, and plain numbers, are converted fo
 Stories are refused; use the dashboard inside the story.
 
 ## Develop
+
+From a checkout of this repo, `uv tool install .` installs the command, and `uv run tabpull` runs it without installing. `uv run playwright install chromium` installs the Chromium fallback for that checkout. An installed `tabpull` uses `uvx --from tabpull playwright install chromium` instead.
 
 ```sh
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
