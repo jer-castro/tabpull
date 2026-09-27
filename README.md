@@ -8,7 +8,6 @@
 </p>
 
 <p align="center">
-  <strong>Crosstab any sheet. Skip the workbook.</strong><br />
   Dashboard-only sheets included. Embedding API with your SSO session; a PAT finds the views.
 </p>
 
@@ -43,10 +42,10 @@ Dashboard sheets go through the Tableau Embedding API (`exportCrosstabAsync`) in
 ## Install
 
 ```sh
-uv tool install tabpull
+uv tool install git+https://github.com/jer-castro/tabpull
 ```
 
-That installs one `tabpull` command. `setup`, `add`, `run`, and `login` are subcommands.
+That installs one `tabpull` command. `setup`, `add`, `run`, and `login` are subcommands. Pin a tag with `@vX.Y.Z` on that URL, and upgrade with `uv tool upgrade tabpull`.
 
 ## Setup
 
@@ -59,7 +58,7 @@ The wizard asks for that name (unless you passed `--site`), a dashboard URL, and
 
 Run it again for another Tableau server or site. Each site keeps its own token and browser session. Re-running a name keeps the current values when you press Enter.
 
-The browser is your installed Chrome, then Edge. If neither is installed, run `uvx --from tabpull playwright install chromium`. tabpull does not download a browser while Chrome or Edge is already there.
+The browser is your installed Chrome, then Edge. If neither is installed, tabpull prints `uvx playwright==<version> install chromium` for the Playwright version it has. tabpull does not download a browser while Chrome or Edge is already there.
 
 ## Use
 
@@ -153,7 +152,7 @@ Stories are refused; use the dashboard inside the story.
 
 ## Develop
 
-From a checkout of this repo, `uv tool install .` installs the command, and `uv run tabpull` runs it without installing. `uv run playwright install chromium` installs the Chromium fallback for that checkout. An installed `tabpull` uses `uvx --from tabpull playwright install chromium` instead.
+From a checkout of this repo, `uv tool install .` installs the command, and `uv run tabpull` runs it without installing. `uv run playwright install chromium` installs the Chromium fallback for that checkout. An installed `tabpull` prints `uvx playwright==<version> install chromium` for the Playwright version it has.
 
 ```sh
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest

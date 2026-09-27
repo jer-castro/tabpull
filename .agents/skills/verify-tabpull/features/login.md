@@ -35,6 +35,6 @@ Preconditions:
 - `TABLEAU_*` environment variables and a `.env` file are not a site. A scratch directory's `.env` does not configure tabpull. Only the site file under the config directory does.
 - An empty `TABLEAU_SITE` is valid (Tableau Server default site); only a missing key counts as missing.
 - `login` reuses the existing state file if there is one, so an SSO provider that still holds a session may close the window almost at once. That's still a real refresh.
-- The browser is installed Chrome, then Edge, then Playwright's Chromium. With none installed every browser path exits with `No Chrome or Edge found. Install one, or run: uvx --from tabpull playwright install chromium`.
+- The browser is installed Chrome, then Edge, then Playwright's Chromium. With none installed every browser path exits with `No Chrome or Edge found. Install one, or run: uvx playwright==<version> install chromium`, where `<version>` is the Playwright package tabpull has installed.
 - `session_valid` calls an internal Tableau endpoint. If every drive reports an expired session right after a successful `login`, suspect a changed `getSessionInfo` before suspecting the cookies.
 - Two sites do not share cookies. `login` with more than one site and no `--site` asks which site at a terminal, and exits asking for `--site` when stdin is not a terminal.
