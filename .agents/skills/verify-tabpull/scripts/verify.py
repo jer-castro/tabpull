@@ -136,6 +136,42 @@ def inspect(view: str, site: str | None) -> int:
     return 0
 
 
+def _bound_day(bound: dict[str, Any] | None) -> str | None:
+    return str(bound['value'])[:10] if bound else None
+
+
+def _date_problems(results: list[dict[str, Any]], sent: dict[str, Any]) -> list[str]:
+    """A set bound must match. An omitted bound must be the filter's own endpoint."""
+    problems = []
+    asked = (sent['min'], sent['max'])
+    for result in results:
+        got = (
+            _bound_day(result['applied']['min']),
+            _bound_day(result['applied']['max']),
+        )
+        for side, asked_day, got_day in (
+            ('min', asked[0], got[0]),
+            ('max', asked[1], got[1]),
+        ):
+            if asked_day is None and got_day is None:
+                problems.append(
+                    f'{result["timezone"]}: open {side} was null, not the filter endpoint'
+                )
+            elif asked_day is not None and got_day != asked_day:
+                problems.append(
+                    f'{result["timezone"]}: applied {side} {got_day}, asked for {asked_day}'
+                )
+    for side, asked_day, key in (('min', asked[0], 'min'), ('max', asked[1], 'max')):
+        if asked_day is not None:
+            continue
+        ends = {_bound_day(result['applied'][key]) for result in results}
+        if len(ends) > 1:
+            problems.append(f'open {side} differs between timezones: {sorted(ends)}')
+    if len({result['csv_sha256'] for result in results}) > 1:
+        problems.append('exported CSVs differ between timezones')
+    return problems
+
+
 def date_filter(args: argparse.Namespace) -> int:
     """Apply one date range in several browser timezones; the applied range and the export must not move."""
     settings = _settings(args.site)
@@ -169,18 +205,7 @@ def date_filter(args: argparse.Namespace) -> int:
             context.close()
         browser.close()
 
-    def day(bound: dict[str, Any] | None) -> str | None:
-        return str(bound['value'])[:10] if bound else None
-
-    problems = []
-    for r in results:
-        got = (day(r['applied']['min']), day(r['applied']['max']))
-        if got != (sent['min'], sent['max']):
-            problems.append(
-                f'{r["timezone"]}: applied {got}, asked for {(sent["min"], sent["max"])}'
-            )
-    if len({r['csv_sha256'] for r in results}) > 1:
-        problems.append('exported CSVs differ between timezones')
+    problems = _date_problems(results, sent)
     report = {
         'view': args.view,
         'sheet': args.sheet,
@@ -218,8 +243,12 @@ def main() -> int:
     check.add_argument('view')
     check.add_argument('--sheet', required=True)
     check.add_argument('--field', required=True)
-    check.add_argument('--min', required=True)
-    check.add_argument('--max', required=True)
+    check.add_argument(
+        '--min', help='YYYY-MM-DD or M/D/YYYY; omit for the filter minimum'
+    )
+    check.add_argument(
+        '--max', help='YYYY-MM-DD or M/D/YYYY; omit for the filter maximum'
+    )
     check.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     match args.command:

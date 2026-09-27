@@ -86,9 +86,22 @@ tabpull --version
 
 Flag `add` still opens the view far enough to refuse a story, with the same message as interactive add: `Stories are not supported; use the dashboard inside it.` `run` refuses a story the same way, before it exports.
 
-`--filter` is `Field=a|b` or `Field=min..max`, and ` @Sheet` names the worksheet. A filter with no sheet is applied on the first sheet in the job, and tabpull prints that. With one configured site, `--site` can be omitted. With several, pass `--site` or pick one at the prompt.
+`--filter` is `Field=a|b` or `Field=min..max`, and ` @Sheet` names the worksheet. Either side of a range may be omitted: `Field=min..` runs from that date through the latest value the filter allows, and `Field=..max` runs from the earliest value through that date. A filter with no sheet is applied on the first sheet in the job, and tabpull prints that. With one configured site, `--site` can be omitted. With several, pass `--site` or pick one at the prompt.
 
 `run` keeps going when one job fails. A terminal shows a progress bar and a summary panel titled `done: <ok>/<total> jobs exported`; a pipe prints that same `done` line and a check or cross per job. If any job failed it prints the `tabpull run` command that reruns only those and exits 1. Each job uses the site it names. When that site's SSO session is missing or expired, tabpull opens the sign-in window if you're at a terminal, and otherwise exits and tells you to run `tabpull login --site <name>`. Crosstab CSVs are rewritten from Tableau's UTF-16 tab-separated format to plain UTF-8 CSV.
+
+`run` takes the same repeatable `--filter` as `add`. Each override applies to every job in that run, replaces the saved filter on the same field and sheet, and is not written back to the jobs file. A field the job does not already filter is added, on ` @Sheet` or on the first sheet. Leave one side of `min..max` empty when that end should stay the filter's own limit. Compute the dates in the caller (tabpull still refuses a relative date) and point each run at its own folder:
+
+```sh
+start=2026-09-01
+end=$(date +%F)
+tabpull run daily-west \
+  --filter "Order Date=${start}.." \
+  --out "./exports/${end}"
+tabpull run daily-west weekly-east \
+  --filter "Order Date=${start}..${end}" \
+  --out "./exports/${end}"
+```
 
 `run` writes `<job>/<sheet>.csv` under the folder you run it from (spaces in names become `_`). Point one run at another jobs file or output folder, before or after the subcommand:
 
@@ -134,7 +147,7 @@ params = { "Top N" = "25" }
 
 Parameters are set first, then filters, in the same order you'd set them in the dashboard. A filter applies on `sheet`. When `sheet` is omitted, tabpull applies that filter on the first entry in `sheets` and prints a line saying so. It does not copy the filter onto every sheet. Other sheets change only the way that same filter changes them in the dashboard.
 
-Dates written as `YYYY-MM-DD` or `M/D/YYYY`, and plain numbers, are converted for range filters. An impossible date such as `2024-02-31` or `2/31/2024` is rejected. A relative date (`yesterday`, `last week`, `today`, `7 days ago`) or a date computed at run time is refused. Use a parameter, or write an absolute `YYYY-MM-DD` or `M/D/YYYY` date.
+Dates written as `YYYY-MM-DD` or `M/D/YYYY`, and plain numbers, are converted for range filters. An impossible date such as `2024-02-31` or `2/31/2024` is rejected. A relative date (`yesterday`, `last week`, `today`, `7 days ago`) or a date computed at run time is refused. Use a parameter, or write an absolute `YYYY-MM-DD` or `M/D/YYYY` date. Omit `min` or `max` to leave that end open: `{ field = "Order Date", min = "2026-09-01", sheet = "Totals" }` runs from that date through the latest value the filter allows, and `{ field = "Order Date", max = "2026-09-25", sheet = "Totals" }` runs from the earliest value through that date.
 
 Stories are refused; use the dashboard inside the story.
 

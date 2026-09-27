@@ -296,12 +296,56 @@ def resolved_filters(job: Job) -> list[ValuesFilter | RangeFilter]:
         if item.sheet:
             resolved.append(item)
             continue
-        print(
-            f'  {job.name}: filter {item.field!r} names no sheet; '
-            f'applying it on {default!r}, the first sheet in the job.'
-        )
+        _note_default_sheet(job, item.field, default)
         resolved.append(replace(item, sheet=default))
     return resolved
+
+
+def _note_default_sheet(job: Job, field_name: str, sheet: str) -> None:
+    print(
+        f'  {job.name}: filter {field_name!r} names no sheet; '
+        f'applying it on {sheet!r}, the first sheet in the job.'
+    )
+
+
+def _filter_target(
+    item: ValuesFilter | RangeFilter, default_sheet: str
+) -> tuple[str, str]:
+    return item.field, item.sheet or default_sheet
+
+
+def filters_for_run(job: Job, overrides: Sequence[ValuesFilter | RangeFilter]) -> Job:
+    """Use `overrides` for this run instead of the saved filter on that field and sheet.
+
+    The same overrides apply to every selected job. An override that names no sheet
+    is applied on the first sheet, and that is printed. A field the job does not
+    filter is added. Nothing is written to the jobs file.
+    """
+    if not overrides:
+        return job
+    if not job.sheets:
+        msg = f'job {job.name!r}: needs at least one sheet'
+        raise JobError(msg)
+    default = job.sheets[0]
+    filters: list[ValuesFilter | RangeFilter] = list(job.filters)
+    for item in overrides:
+        if not item.sheet:
+            _note_default_sheet(job, item.field, default)
+        placed = replace(item, sheet=item.sheet or default)
+        target = _filter_target(placed, default)
+        replaced = False
+        kept: list[ValuesFilter | RangeFilter] = []
+        for existing in filters:
+            if _filter_target(existing, default) != target:
+                kept.append(existing)
+                continue
+            if not replaced:
+                kept.append(placed)
+                replaced = True
+        if not replaced:
+            kept.append(placed)
+        filters = kept
+    return replace(job, filters=filters)
 
 
 def _calendar_day(year: int, month: int, day: int, original: str) -> date:
@@ -912,7 +956,11 @@ def add_job(settings: Settings, jobs_path: Path, name: str | None = None) -> Non
 
 
 def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
-    """Parse `Field=a|b` or `Field=min..max`, with an optional ` @Sheet`."""
+    """Parse `Field=a|b` or `Field=min..max`, with an optional ` @Sheet`.
+
+    Either side of `min..max` may be empty (`min..` or `..max`). A relative date
+    or a date computed at run time is refused.
+    """
     body, sep, sheet = spec.rpartition(' @')
     if not sep:
         body, sheet = spec, ''
@@ -1072,6 +1120,14 @@ def _file_flags(args: argparse.Namespace) -> list[str]:
     return flags
 
 
+def _run_flags(args: argparse.Namespace) -> list[str]:
+    """File flags plus this run's filter overrides, for the suggested rerun."""
+    flags = _file_flags(args)
+    for spec in args.filter_specs or []:
+        flags += ['--filter', spec]
+    return flags
+
+
 def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
     try:
         jobs = load_jobs(jobs_file)
@@ -1088,10 +1144,15 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
         )
         raise SystemExit(msg)
     selected = [job for job in jobs if not args.names or job.name in args.names]
+    try:
+        overrides = [parse_filter_spec(spec) for spec in args.filter_specs or []]
+        selected = [filters_for_run(job, overrides) for job in selected]
+    except JobError as e:
+        raise SystemExit(str(e)) from e
     report = (_TTYRun if ui.rich_output() else _PlainRun)(selected, out_dir)
     failed = run_jobs(selected, out_dir, report)
     # Flags before `--` so a job named like an option (`-daily`, `-h`) stays a name.
-    rerun = shlex.join(['tabpull', 'run', *_file_flags(args), '--', *failed])
+    rerun = shlex.join(['tabpull', 'run', *_run_flags(args), '--', *failed])
     report.summary(
         len(selected) - len(failed), len(selected), rerun if failed else None
     )
@@ -1333,7 +1394,7 @@ def _parser() -> tuple[_Parser, dict[str, _Parser]]:
         action='append',
         dest='filter_specs',
         metavar='SPEC',
-        help='Field=a|b or Field=min..max, optional " @Sheet" (repeatable)',
+        help='Field=a|b or Field=min..max (min.. or ..max leaves that side open); optional " @Sheet" (repeatable)',
     )
     add.add_argument(
         '--param',
@@ -1349,13 +1410,30 @@ def _parser() -> tuple[_Parser, dict[str, _Parser]]:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""writes <out>/<job>/<sheet>.csv, spaces in names become _
 
+--filter uses the same Field=a|b or Field=min..max syntax as add, including
+an open side (min.. or ..max). It applies to every job in this run, replaces
+that job's saved filter on the same field and sheet, and does not rewrite the
+jobs file. A field the job does not have is added. With no @Sheet, that is
+the first sheet.
+
 examples:
   tabpull run
   tabpull run daily-west
-  tabpull run daily-west --out ~/reports
+  tabpull run daily-west --filter "Order Date=2026-09-01.." --out ~/reports
+  tabpull run daily-west weekly-east --filter "Order Date=2026-09-01..2026-09-07"
 """,
     )
     run.add_argument('names', nargs='*', help='only these jobs (default: all)')
+    run.add_argument(
+        '--filter',
+        action='append',
+        dest='filter_specs',
+        metavar='SPEC',
+        help=(
+            'override Field=a|b or Field=min..max for this run only '
+            '(repeatable; applied to every selected job; jobs file unchanged)'
+        ),
+    )
     _add_file_flags(run, out=True, default=argparse.SUPPRESS)
     login = commands.add_parser('login', help='refresh a site SSO browser session')
     login.add_argument(

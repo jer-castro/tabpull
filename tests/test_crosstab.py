@@ -76,6 +76,7 @@ def test_jobs_round_trip_through_toml() -> None:
         [
             ValuesFilter('Region', ['West', 'East'], 'Totals'),
             RangeFilter('Order Date', 'Detail Table', '2026-01-01', None),
+            RangeFilter('Ship Date', 'Detail Table', None, '2026-02-01'),
         ],
         {'Top N': '10'},
     )
@@ -160,6 +161,12 @@ def test_blank_filter_sheet_round_trips_as_blank() -> None:
             RangeFilter('Order Date', 'Totals', '2026-09-01', '2026-09-25'),
         ),
         ('Order Date=2026-09-01..', RangeFilter('Order Date', '', '2026-09-01', None)),
+        ('Order Date=..2026-09-25', RangeFilter('Order Date', '', None, '2026-09-25')),
+        (
+            'Order Date=..2026-09-25 @Totals',
+            RangeFilter('Order Date', 'Totals', None, '2026-09-25'),
+        ),
+        ('Amount=10..', RangeFilter('Amount', '', '10', None)),
     ],
 )
 def test_parse_filter_spec(spec: str, expected: ValuesFilter | RangeFilter) -> None:
@@ -423,3 +430,88 @@ def test_story_refusal_comes_from_one_message() -> None:
     assert crosstab.INSPECT_JS.count(guard) == 1
     assert "sheetType === 'story'" not in crosstab.STORY_JS.replace(guard, '', 1)
     assert "sheetType === 'story'" not in crosstab.INSPECT_JS.replace(guard, '', 1)
+
+
+def test_filter_payload_leaves_an_omitted_bound_unset() -> None:
+    payload = crosstab.filter_payload(
+        RangeFilter('Order Date', 'Totals', '1/3/2024', None)
+    )
+
+    assert payload['min'] == '2024-01-03'
+    assert payload['max'] is None
+    assert crosstab.filter_payload(
+        RangeFilter('Order Date', 'Totals', None, '2/1/2024')
+    ) == {
+        'field': 'Order Date',
+        'sheet': 'Totals',
+        'min': None,
+        'max': '2024-02-01',
+    }
+
+
+def test_filters_for_run_replaces_the_same_field_and_sheet(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    job = Job(
+        'daily',
+        'W/V',
+        ['Totals', 'Detail'],
+        'demo',
+        [
+            RangeFilter('Order Date', 'Totals', '2026-09-01', '2026-09-25'),
+            ValuesFilter('Region', ['West']),
+        ],
+    )
+
+    updated = crosstab.filters_for_run(
+        job,
+        [
+            parse_filter_spec('Order Date=2026-10-01..'),
+            parse_filter_spec('Ship Mode=First Class @Detail'),
+            parse_filter_spec('Order Date=..2026-08-01 @Detail'),
+        ],
+    )
+    note = capsys.readouterr().out
+
+    assert updated.filters == [
+        RangeFilter('Order Date', 'Totals', '2026-10-01', None),
+        ValuesFilter('Region', ['West'], ''),
+        ValuesFilter('Ship Mode', ['First Class'], 'Detail'),
+        RangeFilter('Order Date', 'Detail', None, '2026-08-01'),
+    ]
+    assert "filter 'Order Date' names no sheet" in note
+    assert "'Totals'" in note
+    assert 'Ship Mode' not in note
+    assert 'Detail' not in note
+    assert job.filters == [
+        RangeFilter('Order Date', 'Totals', '2026-09-01', '2026-09-25'),
+        ValuesFilter('Region', ['West']),
+    ]
+
+
+def test_filters_for_run_matches_a_blank_sheet_on_the_first_sheet(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    job = Job(
+        'daily',
+        'W/V',
+        ['A', 'B'],
+        'demo',
+        [RangeFilter('Order Date', '', '2020-01-01', '2020-02-01')],
+    )
+
+    replaced = crosstab.filters_for_run(
+        job, [parse_filter_spec('Order Date=2024-01-01..2024-01-31 @A')]
+    )
+    added = crosstab.filters_for_run(
+        job, [parse_filter_spec('Order Date=2024-01-01.. @B')]
+    )
+
+    assert replaced.filters == [
+        RangeFilter('Order Date', 'A', '2024-01-01', '2024-01-31')
+    ]
+    assert added.filters == [
+        RangeFilter('Order Date', '', '2020-01-01', '2020-02-01'),
+        RangeFilter('Order Date', 'B', '2024-01-01', None),
+    ]
+    assert not capsys.readouterr().out
