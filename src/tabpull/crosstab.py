@@ -334,9 +334,6 @@ def _overrides(
 def filters_for_run(job: Job, overrides: Sequence[ValuesFilter | RangeFilter]) -> Job:
     if not overrides:
         return job
-    if not job.sheets:
-        msg = f'job {job.name!r}: needs at least one sheet'
-        raise JobError(msg)
     default = job.sheets[0]
     filters: list[ValuesFilter | RangeFilter] = list(job.filters)
     for item in overrides:
