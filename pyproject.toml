@@ -9,6 +9,8 @@ authors = [{ name = "Jeremy Castro", email = "160854558+jer-castro@users.noreply
 requires-python = ">=3.12"
 dependencies = [
     "playwright==1.63.0",
+    "questionary==2.1.1",
+    "rich==15.0.0",
     "tableauserverclient==0.41",
 ]
 

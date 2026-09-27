@@ -103,4 +103,4 @@ exports/
 /.verify/
 .agents/skills/verify-tabpull/local/site.md
 /jobs.toml
-/.DS_Store
+.DS_Store

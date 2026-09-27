@@ -1,13 +1,16 @@
+import io
 import runpy
 import shlex
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Self, cast
 
 import pytest
+from rich.console import Console
 
-from tabpull import crosstab, tableau, wizard
+from tabpull import crosstab, tableau, ui, wizard
 from tabpull.crosstab import Job, JobError
 from tabpull.tableau import Settings, UnknownSiteError
 
@@ -348,26 +351,55 @@ def test_add_flags_imply_the_only_site_and_default_jobs_file(
     assert not (tmp_path / 'jobs.toml').exists()
 
 
-def test_prompted_add_puts_a_sheetless_filter_on_the_first_sheet(
+def _scripted_ask(monkeypatch: pytest.MonkeyPatch, answers: list[object]) -> None:
+    queued = iter(answers)
+
+    def ask(question: object) -> object:
+        try:
+            return next(queued)
+        except StopIteration as e:
+            raise AssertionError(question) from e
+
+    monkeypatch.setattr(crosstab.ui, 'ask', ask)
+    monkeypatch.setattr(crosstab.ui, 'interactive', lambda: True)
+
+
+def test_prompted_add_keeps_the_sheet_on_each_filter(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     jobs = tmp_path / 'jobs.toml'
-    answers = iter(
+    region = {
+        'field': 'Region',
+        'sheet': 'A Title Sheet',
+        'type': 'categorical',
+        'current': 'West',
+    }
+    order_date = {
+        'field': 'Order Date',
+        'sheet': 'A Title Sheet',
+        'type': 'range',
+        'current': '1/3/2023 .. 12/30/2026',
+    }
+    ship = {
+        'field': 'Ship Mode',
+        'sheet': 'B Real Sheet',
+        'type': 'categorical',
+        'current': '(All)',
+    }
+    _scripted_ask(
+        monkeypatch,
         [
-            '2,1',
-            'Region=West',
-            'Order Date=1/3/2024..2/1/2024',
-            'Ship Mode=First Class',
-            '',
-            '',
-        ]
+            ['B Real Sheet', 'A Title Sheet'],
+            region,
+            'West',
+            order_date,
+            '1/3/2024',
+            '2/1/2024',
+            ship,
+            'First Class',
+            'Done',
+        ],
     )
-
-    def fake_input(prompt: str = '') -> str:
-        try:
-            return next(answers)
-        except StopIteration as e:
-            raise AssertionError(prompt) from e
 
     class Page:
         def evaluate(self, script: str, arg: object = None) -> dict[str, object]:
@@ -410,7 +442,6 @@ def test_prompted_add_puts_a_sheetless_filter_on_the_first_sheet(
         name = 'Dashboard 1'
         content_url = 'CrosstabMe/sheets/Dashboard1'
 
-    monkeypatch.setattr('builtins.input', fake_input)
     monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
     monkeypatch.setattr(crosstab, 'browser_session', lambda *_a, **_k: object())
     monkeypatch.setattr(crosstab, 'open_view', lambda *_a, **_k: Page())
@@ -418,34 +449,39 @@ def test_prompted_add_puts_a_sheetless_filter_on_the_first_sheet(
 
     crosstab.add_job(_settings('demo', tmp_path), jobs, name='prompted')
     job = crosstab.load_jobs(jobs)[0]
-    notes = [
-        line
-        for line in capsys.readouterr().out.splitlines()
-        if 'names no sheet' in line
-    ]
 
+    assert 'names no sheet' not in capsys.readouterr().out
     assert job.sheets == ['B Real Sheet', 'A Title Sheet']
     assert job.filters == [
-        crosstab.ValuesFilter('Region', ['West'], 'B Real Sheet'),
-        crosstab.RangeFilter('Order Date', 'B Real Sheet', '1/3/2024', '2/1/2024'),
+        crosstab.ValuesFilter('Region', ['West'], 'A Title Sheet'),
+        crosstab.RangeFilter('Order Date', 'A Title Sheet', '1/3/2024', '2/1/2024'),
         crosstab.ValuesFilter('Ship Mode', ['First Class'], 'B Real Sheet'),
-    ]
-    note = (
-        '  prompted: filter {field!r} names no sheet; '
-        "applying it on 'B Real Sheet', the first sheet in the job."
-    )
-    assert notes == [
-        note.format(field='Region'),
-        note.format(field='Order Date'),
-        note.format(field='Ship Mode'),
     ]
 
 
 def test_prompted_add_refuses_a_relative_range_before_saving(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    message = crosstab._validate_range_answer('yesterday')
+    assert message == (
+        "'yesterday' is a relative date or a date computed at run time; "
+        'use YYYY-MM-DD or M/D/YYYY'
+    )
+    assert crosstab._validate_range_answer('1/3/2024') is True
     jobs = tmp_path / 'jobs.toml'
-    answers = iter(['1', 'Order Date=yesterday..today', '', ''])
+    _scripted_ask(
+        monkeypatch,
+        [
+            ['A Title Sheet'],
+            {
+                'field': 'Order Date',
+                'sheet': 'A Title Sheet',
+                'type': 'range',
+                'current': '',
+            },
+            'yesterday',
+        ],
+    )
 
     class Page:
         def evaluate(self, script: str, arg: object = None) -> dict[str, object]:
@@ -472,7 +508,6 @@ def test_prompted_add_refuses_a_relative_range_before_saving(
         name = 'Dashboard 1'
         content_url = 'CrosstabMe/sheets/Dashboard1'
 
-    monkeypatch.setattr('builtins.input', lambda prompt='': next(answers))
     monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
     monkeypatch.setattr(crosstab, 'browser_session', lambda *_a, **_k: object())
     monkeypatch.setattr(crosstab, 'open_view', lambda *_a, **_k: Page())
@@ -500,12 +535,55 @@ def test_add_without_flags_still_prompts(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('flags')),
     )
 
+    monkeypatch.setattr(crosstab.ui, 'interactive', lambda: True)
     assert crosstab.main(['add']) == 0
     assert seen == ['demo']
     with pytest.raises(SystemExit, match='--view'):
         crosstab.main(['add', '--sheet', 'A'])
     with pytest.raises(SystemExit, match='--sheet'):
         crosstab.main(['add', '--view', 'Sales/Overview', '--filter', 'Region=West'])
+
+
+def test_prompted_add_without_a_tty_exits_with_the_view_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _xdg(monkeypatch, tmp_path)
+    tableau.save_site('demo', _site_values())
+    monkeypatch.setattr(crosstab.ui, 'interactive', lambda: False)
+
+    def refuse(question: object) -> object:
+        raise AssertionError(question)
+
+    monkeypatch.setattr(crosstab.ui, 'ask', refuse)
+    monkeypatch.setattr(
+        crosstab,
+        'add_job',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('add')),
+    )
+    with pytest.raises(SystemExit, match='Pass --view'):
+        crosstab.main(['add'])
+
+
+def test_pick_site_asks_when_several_sites_are_interactive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _xdg(monkeypatch, tmp_path)
+    tableau.save_site('alpha', _site_values())
+    tableau.save_site('beta', _site_values(server='https://b.example', site='ops'))
+    monkeypatch.setattr(crosstab.ui, 'interactive', lambda: True)
+    seen: list[object] = []
+
+    def ask(question: object) -> str:
+        seen.append(question)
+        return 'beta'
+
+    monkeypatch.setattr(crosstab.ui, 'ask', ask)
+    settings = crosstab._pick_site(None)
+
+    assert settings.name == 'beta'
+    assert settings.server == 'https://b.example'
+    assert settings.site == 'ops'
+    assert len(seen) == 1
 
 
 def test_flag_add_and_run_refuse_a_story(
@@ -665,7 +743,7 @@ sheets = ["S"]
         return _settings(name, tmp_path, value=hidden)
 
     def export_embed(
-        _context: object, settings: Settings, job: Job, out_dir: Path
+        _context: object, settings: Settings, job: Job, out_dir: Path, **_: object
     ) -> list[Path]:
         if job.name == 'bad':
             msg = 'broken view'
@@ -719,7 +797,7 @@ sheets = ["S"]
     monkeypatch.setattr(
         crosstab,
         'export_embed',
-        lambda _context, _settings, _job, out_dir: (
+        lambda _context, _settings, _job, out_dir, **_: (
             seen.append(out_dir) or [out_dir / 'a.csv']
         ),
     )
@@ -747,7 +825,7 @@ sheets = ["S"]
     fail = [True]
 
     def export(
-        _context: object, _settings: object, job: Job, out_dir: Path
+        _context: object, _settings: object, job: Job, out_dir: Path, **_: object
     ) -> list[Path]:
         if fail.pop():
             msg = 'boom'
@@ -766,6 +844,58 @@ sheets = ["S"]
     fail.append(False)
     assert crosstab.main(shlex.split(rerun)[1:]) == 0
     assert 'done: 1/1 jobs exported' in capsys.readouterr().out
+
+
+def test_tty_run_summary_lists_the_failed_job_and_exits_1(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    out = tmp_path / 'out'
+    jobs.write_text(
+        """
+[[job]]
+name = "good-job"
+site = "one"
+view = "W/V"
+sheets = ["Alpha"]
+
+[[job]]
+name = "bad-job"
+site = "one"
+view = "W/V"
+sheets = ["Gamma"]
+""",
+        encoding='utf-8',
+    )
+
+    def export_embed(
+        _context: object,
+        _settings: object,
+        job: Job,
+        out_dir: Path,
+        *,
+        on_sheet: Callable[[int, str], None],
+    ) -> list[Path]:
+        on_sheet(0, job.sheets[0])
+        if job.name == 'bad-job':
+            msg = 'broken view'
+            raise JobError(msg)
+        return [out_dir / f'{job.name}.csv']
+
+    buffer = io.StringIO()
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'load_site', lambda name: _settings(name, tmp_path))
+    monkeypatch.setattr(crosstab, 'browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr(crosstab, 'export_embed', export_embed)
+    monkeypatch.setattr(ui, 'rich_output', lambda: True)
+    monkeypatch.setattr(ui, 'console', Console(file=buffer, width=120))
+
+    code = crosstab.main(['--jobs', str(jobs), '--out', str(out), 'run'])
+
+    assert code == 1
+    assert 'bad-job' in buffer.getvalue()
+    assert 'good-job' in buffer.getvalue()
+    assert 'broken view' in buffer.getvalue()
 
 
 def test_home_lists_sites_and_jobs_or_says_there_are_none(
@@ -859,40 +989,29 @@ def test_setup_writes_each_site_under_xdg(
     monkeypatch.chdir(work)
     (work / '.env').write_text('TABLEAU_PAT_SECRET=from-dotenv\n', encoding='utf-8')
     _xdg(monkeypatch, tmp_path)
-    answers = iter(
-        [
-            '',
-            'https://tableau.example.com/#/site/finance/home',
-            'y',
-            'tabpull',
-            'n',
-            '',
-            '',
-            '',
-            'n',
-            '',
-            'https://other.example/t/ops/views/Book/Dash',
-            'y',
-            'other-token',
-            'n',
-        ]
-    )
-    prompts: list[str] = []
-
-    def fake_input(prompt: str = '') -> str:
-        prompts.append(prompt)
-        try:
-            return next(answers)
-        except StopIteration as e:
-            msg = '\n'.join(prompts)
-            raise AssertionError(msg) from e
-
     first_value = 'super-secret-value'
     third_value = 'other-secret'
-    hidden = iter([first_value, '', third_value])
-    monkeypatch.setattr('builtins.input', fake_input)
-    monkeypatch.setattr(
-        wizard.getpass, 'getpass', lambda prompt='', stream=None: next(hidden)
+    _scripted_ask(
+        monkeypatch,
+        [
+            None,
+            'https://tableau.example.com/#/site/finance/home',
+            True,
+            'tabpull',
+            first_value,
+            False,
+            None,
+            '',
+            'tabpull',
+            '',
+            False,
+            None,
+            'https://other.example/t/ops/views/Book/Dash',
+            True,
+            'other-token',
+            third_value,
+            False,
+        ],
     )
     monkeypatch.setattr(wizard, 'open_url', lambda _url: None)
     monkeypatch.setattr(wizard, 'rest_session', lambda _settings: _Playwright())

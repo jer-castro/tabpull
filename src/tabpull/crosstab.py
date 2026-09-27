@@ -20,19 +20,35 @@ import shlex
 import string
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from difflib import SequenceMatcher
+from functools import partial
 from pathlib import Path
 from typing import Any, NoReturn, TypedDict
 
+import questionary
 import tableauserverclient as tsc
 from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from rich import box
+from rich.markup import escape
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskID,
+    TextColumn,
+    TimeElapsedColumn,
+)
+from rich.rule import Rule
+from rich.table import Table
 
-from tabpull import wizard
+from tabpull import ui, wizard
 from tabpull.cli import VERSION_FLAGS, version
 from tabpull.tableau import (
     MissingSettingsError,
@@ -397,10 +413,15 @@ def open_view(context: BrowserContext, settings: Settings, view: str) -> Page:
 
 
 def export_embed(
-    context: BrowserContext, settings: Settings, job: Job, out_dir: Path
+    context: BrowserContext,
+    settings: Settings,
+    job: Job,
+    out_dir: Path,
+    *,
+    on_sheet: Callable[[int, str], None] | None = None,
 ) -> list[Path]:
+    """Crosstab each sheet to CSV; `on_sheet(done, sheet)` fires before each export."""
     filters = resolved_filters(job)
-    # Reject a bad bound before the view opens, so it never reaches Tableau.
     payloads = [filter_payload(item) for item in filters]
     page = open_view(context, settings, job.view)
     try:
@@ -413,6 +434,8 @@ def export_embed(
         )
         written = []
         for sheet in job.sheets:
+            if on_sheet is not None:
+                on_sheet(len(written), sheet)
             with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as download:
                 page.evaluate(EXPORT_JS, sheet)
             path = output_path(out_dir, job, sheet)
@@ -427,23 +450,124 @@ def export_embed(
         page.close()
 
 
-def _fail(name: str, message: str) -> None:
-    print(f'  ✗ {name}: {message.partition("\n")[0] or message}')
+def _first_line(message: str) -> str:
+    return message.partition('\n')[0] or message
 
 
-def _fail_all(site_jobs: Sequence[Job], message: str) -> list[str]:
+class _PlainRun:
+    def __init__(self, jobs: Sequence[Job], out_dir: Path) -> None:
+        print(f'Exporting {len(jobs)} job(s) to {out_dir}/')
+
+    @staticmethod
+    def live() -> AbstractContextManager[object]:
+        return nullcontext()
+
+    @staticmethod
+    def sheet(job: Job, done: int, sheet: str) -> None:
+        pass
+
+    @staticmethod
+    def ok(job: Job, paths: Sequence[Path]) -> None:
+        print(f'  ✓ {job.name}: {", ".join(map(str, paths))}')
+
+    @staticmethod
+    def fail(job: Job, message: str) -> None:
+        print(f'  ✗ {job.name}: {_first_line(message)}')
+
+    @staticmethod
+    def summary(ok: int, total: int, rerun: str | None) -> None:
+        print(f'done: {ok}/{total} jobs exported')
+        if rerun:
+            print(f'help: fix the failed jobs, then rerun them: {rerun}')
+
+
+_BAR_REASON_MAX_CHARS = 48
+
+
+class _TTYRun:
+    def __init__(self, jobs: Sequence[Job], out_dir: Path) -> None:
+        ui.console.print(Rule('[bold]tabpull run', align='left', style='blue'))
+        ui.console.print(f'Exporting {len(jobs)} job(s) to {escape(str(out_dir))}/')
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn('[bold]{task.fields[job]:<12}'),
+            TextColumn('{task.description}'),
+            BarColumn(bar_width=20),
+            TextColumn('{task.completed}/{task.total} sheets'),
+            TimeElapsedColumn(),
+            console=ui.console,
+        )
+        self.tasks: dict[int, TaskID] = {
+            id(job): self.progress.add_task(
+                'queued', job=escape(job.name), total=len(job.sheets)
+            )
+            for job in jobs
+        }
+        self.rows: list[tuple[str, bool, str]] = []
+
+    def live(self) -> AbstractContextManager[object]:
+        # Progress redirects stdout, so site lines, filter notes, and SSO prompts still print.
+        return self.progress
+
+    def sheet(self, job: Job, done: int, sheet: str) -> None:
+        self.progress.update(
+            self.tasks[id(job)],
+            completed=done,
+            description=f'exporting {escape(sheet)}',
+        )
+
+    def ok(self, job: Job, paths: Sequence[Path]) -> None:
+        self.progress.update(
+            self.tasks[id(job)], completed=len(paths), description='[green]done[/]'
+        )
+        self.rows.append((job.name, True, ', '.join(map(_home_path, paths))))
+
+    def fail(self, job: Job, message: str) -> None:
+        line = _first_line(message).strip()
+        short = line and len(line) <= _BAR_REASON_MAX_CHARS
+        self.progress.update(
+            self.tasks[id(job)],
+            description=f'[yellow]{escape(line)}[/]' if short else '[red]failed[/]',
+        )
+        self.rows.append((job.name, False, line))
+
+    def summary(self, ok: int, total: int, rerun: str | None) -> None:
+        table = Table(box=box.SIMPLE, show_header=False)
+        for name, success, info in self.rows:
+            mark = '[green]✓[/]' if success else '[red]✗[/]'
+            table.add_row(mark, f'[bold]{escape(name)}[/]', escape(info))
+        ui.console.print(
+            Panel(
+                table,
+                title=f'done: {ok}/{total} jobs exported',
+                title_align='left',
+                border_style='green' if ok == total else 'red',
+            )
+        )
+        if rerun:
+            ui.console.print(f'  [dim]rerun failed:[/] [bold]{escape(rerun)}[/]\n')
+
+
+type _Report = _PlainRun | _TTYRun
+
+
+def _fail_all(site_jobs: Sequence[Job], message: str, report: _Report) -> list[str]:
     for job in site_jobs:
-        _fail(job.name, message)
+        report.fail(job, message)
     return [job.name for job in site_jobs]
 
 
 def _export_group(
-    pw: Playwright, site_name: str, site_jobs: Sequence[Job], out_dir: Path
+    pw: Playwright,
+    site_name: str,
+    site_jobs: Sequence[Job],
+    out_dir: Path,
+    report: _Report,
 ) -> list[str]:
     try:
         settings = load_site(site_name)
     except (UnknownSiteError, MissingSettingsError, ValueError) as e:
-        return _fail_all(site_jobs, str(e))
+        return _fail_all(site_jobs, str(e), report)
     print(
         f'  site {settings.name}: {settings.server}, site {settings.site or "(default)"}'
     )
@@ -453,20 +577,26 @@ def _export_group(
         message = (
             e.code if isinstance(e.code, str) else 'could not open a browser session'
         )
-        return _fail_all(site_jobs, message)
-    failed = []
+        return _fail_all(site_jobs, message, report)
+    failed: list[str] = []
     for job in site_jobs:
         try:
-            paths = export_embed(context, settings, job, out_dir)
+            paths = export_embed(
+                context,
+                settings,
+                job,
+                out_dir,
+                on_sheet=partial(report.sheet, job),
+            )
         except (JobError, PlaywrightError, OSError, UnicodeError, csv.Error) as e:
             failed.append(job.name)
-            _fail(job.name, str(e))
+            report.fail(job, str(e))
         else:
-            print(f'  ✓ {job.name}: {", ".join(map(str, paths))}')
+            report.ok(job, paths)
     return failed
 
 
-def run_jobs(jobs: Sequence[Job], out_dir: Path) -> list[str]:
+def run_jobs(jobs: Sequence[Job], out_dir: Path, report: _Report) -> list[str]:
     """Export every job, carrying on past failures. Returns the failed job names."""
     groups: list[tuple[str, list[Job]]] = []
     for job in jobs:
@@ -474,25 +604,13 @@ def run_jobs(jobs: Sequence[Job], out_dir: Path) -> list[str]:
             groups[-1][1].append(job)
         else:
             groups.append((job.site, [job]))
+    failed: list[str] = []
     if not groups:
-        return []
-    failed = []
-    with sync_playwright() as pw:
+        return failed
+    with report.live(), sync_playwright() as pw:
         for site_name, site_jobs in groups:
-            failed += _export_group(pw, site_name, site_jobs, out_dir)
+            failed += _export_group(pw, site_name, site_jobs, out_dir, report)
     return failed
-
-
-def _choose(prompt: str, count: int) -> list[int]:
-    while True:
-        answer = input(f'{prompt} ').strip()
-        try:
-            picks = [int(part) - 1 for part in answer.replace(',', ' ').split()]
-        except ValueError:
-            picks = []
-        if picks and all(0 <= p < count for p in picks):
-            return picks
-        print(f'  Enter numbers between 1 and {count}.')
 
 
 def _view_path(item: tsc.ViewItem) -> str:
@@ -516,99 +634,218 @@ def _split_values(value: str) -> list[str]:
     return [v.strip() for v in value.split('|')]
 
 
+class _ListedFilter(TypedDict):
+    field: str
+    sheet: str
+    type: str
+    current: str
+
+
+def _validate_range_answer(value: str) -> bool | str:
+    try:
+        normalize_range_bound(value.strip() or None)
+    except JobError as e:
+        return str(e)
+    return True
+
+
+def _range_ends(current: str) -> tuple[str, str]:
+    low, sep, high = current.partition(' .. ')
+    if not sep:
+        return '', ''
+    return low, high
+
+
+def _prompt_text(
+    message: str,
+    *,
+    default: str = '',
+    validate: Callable[[str], bool | str] | None = None,
+) -> str:
+    return ui.ask(
+        questionary.text(message, default=default, validate=validate, style=ui.STYLE)
+    )
+
+
+def _prompt_bound(message: str, default: str) -> str | None:
+    answer = _prompt_text(message, default=default, validate=_validate_range_answer)
+    return _accept_range_bound(answer.strip() or None)
+
+
 def _find_view(settings: Settings) -> tsc.ViewItem:
-    query = input(
-        'Paste a Tableau view URL, or type part of a workbook/view name: '
-    ).strip()
-    with rest_session(settings) as server:
+    query = _prompt_text('View URL or part of a workbook/view name').strip()
+    with ui.console.status('Searching views…'), rest_session(settings) as server:
         options = tsc.RequestOptions(pagesize=1000)
         options.fields |= {'_default_', 'sheetType'}
         views = list(tsc.Pager(server.views, options))
     target = parse_tableau_url(query).view if query.startswith('http') else None
     if target:
-        matches = [v for v in views if _view_path(v) == target]
+        matches = [item for item in views if _view_path(item) == target]
     else:
-        scored = [(match_score(query, f'{v.name} {v.content_url}'), v) for v in views]
-        scored.sort(key=lambda sv: -sv[0])
-        matches = [v for score, v in scored if score >= MIN_MATCH_SCORE]
+        scored = [
+            (match_score(query, f'{item.name} {item.content_url}'), item)
+            for item in views
+        ]
+        scored.sort(key=lambda pair: -pair[0])
+        matches = [item for score, item in scored if score >= MIN_MATCH_SCORE]
     if not matches:
         msg = f'No views you can access match {query!r}.'
         raise SystemExit(msg)
+    if target and len(matches) == 1:
+        return matches[0]
     if len(matches) > MAX_SEARCH_RESULTS:
         print(
             f'  Showing the best {MAX_SEARCH_RESULTS} of {len(matches)} matches; type more of the name to narrow it.'
         )
         matches = matches[:MAX_SEARCH_RESULTS]
-    for i, v in enumerate(matches, 1):
-        print(f'  [{i}] {v.name}  ({v.sheet_type or "view"}, {v.content_url})')
-    return matches[_choose('Which view?', len(matches))[0]]
+    choices = []
+    for item in matches:
+        kind = item.sheet_type or 'view'
+        choices.append(
+            questionary.Choice(
+                f'{item.name}  {item.content_url}  {kind}',
+                value=item,
+                disabled='stories unsupported' if kind.lower() == 'story' else None,
+            )
+        )
+    return ui.ask(
+        questionary.select(
+            'View',
+            choices=choices,
+            use_search_filter=True,
+            use_jk_keys=False,
+            instruction='(type to filter)',
+            style=ui.STYLE,
+        )
+    )
 
 
-def _prompt_pairs(prompt: str) -> list[tuple[str, str]]:
-    print(prompt)
-    pairs = []
-    while line := input('  > ').strip():
-        key, sep, value = line.partition('=')
-        if sep and key.strip():
-            pairs.append((key.strip(), value.strip()))
+def _print_fields(
+    sheets: list[SheetInfo], chosen: Sequence[str], params: list[dict[str, str]]
+) -> list[_ListedFilter]:
+    table = Table(
+        title='Filters & parameters on these sheets',
+        box=box.ROUNDED,
+        title_justify='left',
+    )
+    for column in ('kind', 'name', 'type', 'sheet', 'current'):
+        table.add_column(column)
+    picked_names = set(chosen)
+    listed: list[_ListedFilter] = []
+    for sheet in sheets:
+        if sheet['name'] not in picked_names:
+            continue
+        for item in sheet['filters']:
+            row: _ListedFilter = {
+                'field': item['field'],
+                'sheet': sheet['name'],
+                'type': item['type'],
+                'current': item['current'],
+            }
+            listed.append(row)
+            table.add_row(
+                'filter', row['field'], row['type'], row['sheet'], row['current']
+            )
+    for param in params:
+        table.add_row('param', param['name'], '', '', param['current'])
+    ui.console.print(table)
+    return listed
+
+
+def _prompt_filters(listed: list[_ListedFilter]) -> list[ValuesFilter | RangeFilter]:
+    filters: list[ValuesFilter | RangeFilter] = []
+    if not listed:
+        return filters
+    while True:
+        choices = [
+            questionary.Choice(f'{item["field"]}  on {item["sheet"]!r}', value=item)
+            for item in listed
+        ]
+        item = ui.ask(
+            questionary.select(
+                'Add a filter', choices=[*choices, 'Done'], style=ui.STYLE
+            )
+        )
+        if item == 'Done':
+            return filters
+        field_name, sheet = item['field'], item['sheet']
+        if item['type'] == 'range':
+            low, high = _range_ends(item['current'])
+            filters.append(
+                RangeFilter(
+                    field_name,
+                    sheet,
+                    _prompt_bound(f'{field_name} from', low),
+                    _prompt_bound(f'{field_name} to', high),
+                )
+            )
         else:
-            print('  Use Name=value.')
-    return pairs
+            default = '' if item['current'] == '(All)' else item['current']
+            values = _prompt_text(f'{field_name} values (a|b)', default=default)
+            filters.append(ValuesFilter(field_name, _split_values(values), sheet))
+
+
+def _prompt_params(params: list[dict[str, str]]) -> dict[str, str]:
+    chosen: dict[str, str] = {}
+    if not params:
+        return chosen
+    while True:
+        choices = [questionary.Choice(item['name'], value=item) for item in params]
+        param = ui.ask(
+            questionary.select(
+                'Set a parameter', choices=[*choices, 'Done'], style=ui.STYLE
+            )
+        )
+        if param == 'Done':
+            return chosen
+        chosen[param['name']] = _prompt_text(param['name'], default=param['current'])
+
+
+def _prompt_sheets(names: list[str]) -> list[str]:
+    return ui.ask(
+        questionary.checkbox(
+            'Sheets to crosstab',
+            choices=names,
+            validate=lambda picked: bool(picked) or 'Pick at least one sheet',
+            style=ui.STYLE,
+        )
+    )
 
 
 def _build_embed_job(
     context: BrowserContext, settings: Settings, name: str, view: str
 ) -> Job:
-    page = open_view(context, settings, view)
-    info: ViewInfo = page.evaluate(INSPECT_JS)
-    page.close()
-    sheets = info['sheets']
-    print('\nSheets in this view (hidden ones included):')
-    for i, sheet in enumerate(sheets, 1):
-        print(f'  [{i}] {sheet["name"]}')
-    chosen = [
-        sheets[i]['name']
-        for i in _choose('Which sheet(s) to crosstab? (e.g. 2 or 2,3)', len(sheets))
-    ]
-
-    kind_by_field: dict[str, str] = {}
-    for sheet in sorted(sheets, key=lambda s: s['name'] not in chosen):
-        for item in sheet['filters']:
-            kind_by_field.setdefault(item['field'], item['type'])
-            print(
-                f'  filter  {item["field"]} ({item["type"]}) on {sheet["name"]!r}: {item["current"]}'
-            )
-    for param in info['params']:
-        print(f'  param   {param["name"]}: {param["current"]}')
-
-    filters: list[ValuesFilter | RangeFilter] = []
-    for key, value in _prompt_pairs(
-        'Filters as Field=value, | between values, min..max for ranges. Blank line when done.'
-    ):
-        # A prompted filter cannot name a sheet. resolved_filters puts it on
-        # the first sheet in the job and prints the same note as flag add.
-        if kind_by_field.get(key, 'categorical') == 'range':
-            low, _, high = value.partition('..')
-            filters.append(
-                RangeFilter(
-                    key,
-                    '',
-                    _accept_range_bound(low.strip() or None),
-                    _accept_range_bound(high.strip() or None),
-                )
-            )
-        else:
-            filters.append(ValuesFilter(key, _split_values(value), ''))
-    params = dict(_prompt_pairs('Parameters as Name=value. Blank line when done.'))
-    job = Job(name, view, chosen, settings.name, filters, params)
+    with ui.console.status(f'Opening {view} in headless browser…'):
+        page = open_view(context, settings, view)
+        info: ViewInfo = page.evaluate(INSPECT_JS)
+        page.close()
+    chosen = _prompt_sheets([sheet['name'] for sheet in info['sheets']])
+    listed = _print_fields(info['sheets'], chosen, info['params'])
+    job = Job(
+        name,
+        view,
+        chosen,
+        settings.name,
+        _prompt_filters(listed),
+        _prompt_params(info['params']),
+    )
     return replace(job, filters=resolved_filters(job))
 
 
 def _using_site(settings: Settings) -> None:
-    print(
+    detail = (
         f'Using site {settings.name!r} ({settings.server}, '
         f'site {settings.site or "(default)"}).'
     )
+    ui.console.print(f'[dim]{escape(detail)}[/]', soft_wrap=True)
+
+
+def _saved_filter(item: ValuesFilter | RangeFilter) -> str:
+    if isinstance(item, RangeFilter):
+        shown = f'{item.min or ""}..{item.max or ""}'
+    else:
+        shown = '|'.join(item.values)
+    return f'{item.field}={shown} @{item.sheet}'
 
 
 def append_job(path: Path, job: Job) -> None:
@@ -617,8 +854,32 @@ def append_job(path: Path, job: Job) -> None:
     prefix = '\n' if path.exists() and path.stat().st_size else ''
     with path.open('a', encoding='utf-8') as handle:
         handle.write(prefix + text)
-    print(f'\nSaved job {job.name!r} to {path}:\n\n{text}')
-    print(f'Run it: tabpull run {job.name}')
+    if not ui.rich_output():
+        print(f'\nSaved job {job.name!r} to {path}:\n\n{text}')
+        print(f'Run it: tabpull run {job.name}')
+        return
+    filters = '; '.join(_saved_filter(item) for item in job.filters) or '-'
+    params = '; '.join(f'{key}={value}' for key, value in job.params.items()) or '-'
+    body = '\n'.join(
+        (
+            f'[bold]{escape(job.name)}[/]  on {escape(job.site)}',
+            f'view    {escape(job.view)}',
+            f'sheets  {escape(", ".join(job.sheets))}',
+            f'filters {escape(filters)}',
+            f'params  {escape(params)}',
+            escape(str(path)),
+        )
+    )
+    ui.console.print(
+        Panel(
+            body,
+            title='[green]✓ Saved[/]',
+            title_align='left',
+            border_style='green',
+            subtitle=f'run it: [bold]tabpull run {escape(job.name)}[/]',
+            subtitle_align='left',
+        )
+    )
 
 
 def add_job(settings: Settings, jobs_path: Path, name: str | None = None) -> None:
@@ -628,7 +889,19 @@ def add_job(settings: Settings, jobs_path: Path, name: str | None = None) -> Non
     existing = {job.name for job in load_jobs(jobs_path)}
     default_name = _slug(item.name or view)
     if name is None:
-        name = input(f'Job name [{default_name}]: ').strip() or default_name
+
+        def reject_existing(value: str) -> bool | str:
+            candidate = value.strip() or default_name
+            if candidate in existing:
+                return f'A job named {candidate!r} already exists in {jobs_path}.'
+            return True
+
+        name = (
+            _prompt_text(
+                'Job name', default=default_name, validate=reject_existing
+            ).strip()
+            or default_name
+        )
     if name in existing:
         msg = f'A job named {name!r} already exists in {jobs_path}.'
         raise SystemExit(msg)
@@ -737,7 +1010,7 @@ def _configured_name(explicit: str | None) -> str:
 
 
 def _pick_site(explicit: str | None) -> Settings:
-    if explicit or not sys.stdin.isatty():
+    if explicit or not ui.interactive():
         return load_site(_configured_name(explicit))
     names = list_sites()
     if len(names) == 1:
@@ -745,13 +1018,14 @@ def _pick_site(explicit: str | None) -> Settings:
     if not names:
         print('No Tableau site configured. Starting setup.')
         return load_site(wizard.main(None))
-    print('Sites:')
-    for index, name in enumerate(names, 1):
+    choices = []
+    for name in names:
         settings = load_site(name)
-        print(
-            f'  [{index}] {name}  ({settings.server}, site {settings.site or "(default)"})'
-        )
-    return load_site(names[_choose('Which site?', len(names))[0]])
+        label = f'{name}  ({settings.server}, site {settings.site or "(default)"})'
+        choices.append(questionary.Choice(label, value=name))
+    return load_site(
+        ui.ask(questionary.select('Site', choices=choices, style=ui.STYLE))
+    )
 
 
 def _cmd_login(site: str | None) -> None:
@@ -769,10 +1043,11 @@ def _cmd_login(site: str | None) -> None:
 
 def _cmd_add(args: argparse.Namespace, jobs_file: Path) -> None:
     try:
-        if _flag_mode(args):
+        if _flag_mode(args) or not ui.interactive():
             _require_flag_shape(args)
             add_job_from_flags(load_site(_configured_name(args.site)), args, jobs_file)
             return
+        ui.console.print(Rule('[bold]tabpull add', align='left', style='blue'))
         add_job(_pick_site(args.site), jobs_file, args.name)
     except (
         JobError,
@@ -813,15 +1088,14 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
         )
         raise SystemExit(msg)
     selected = [job for job in jobs if not args.names or job.name in args.names]
-    print(f'Exporting {len(selected)} job(s) to {out_dir}/')
-    failed = run_jobs(selected, out_dir)
-    print(f'done: {len(selected) - len(failed)}/{len(selected)} jobs exported')
-    if not failed:
-        return 0
+    report = (_TTYRun if ui.rich_output() else _PlainRun)(selected, out_dir)
+    failed = run_jobs(selected, out_dir, report)
     # Flags before `--` so a job named like an option (`-daily`, `-h`) stays a name.
     rerun = shlex.join(['tabpull', 'run', *_file_flags(args), '--', *failed])
-    print(f'help: fix the failed jobs, then rerun them: {rerun}')
-    return 1
+    report.summary(
+        len(selected) - len(failed), len(selected), rerun if failed else None
+    )
+    return 1 if failed else 0
 
 
 _TOON_NUMBER = re.compile(r'^[+-]?[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$', re.IGNORECASE)
@@ -857,6 +1131,93 @@ def _home_path(path: Path | str) -> str:
     return '~' + text[len(home) :] if text.startswith(home + os.sep) else text
 
 
+def _sso_badge(name: str, server: str) -> str:
+    if server == '(incomplete)':
+        return '[red]incomplete[/]'
+    if load_site(name).auth_path.exists():
+        return '[green]● saved[/]'
+    return '[yellow]● not signed in[/]'
+
+
+def _home_help(
+    args: argparse.Namespace,
+    sites: Sequence[Sequence[str]],
+    jobs: Sequence[Job],
+) -> list[str]:
+    help_lines: list[str] = []
+    if not sites:
+        help_lines.append('Run `tabpull setup` to connect a Tableau site')
+    quoted = shlex.join(_file_flags(args))
+    flags = f' {quoted}' if quoted else ''
+    if jobs:
+        help_lines += [
+            f'Run `tabpull run{flags}` to export every job into the out folder',
+            f'Run `tabpull run <name>{flags}` to export one job',
+        ]
+    if sites:
+        jobs_flag = f' --jobs {shlex.quote(str(args.jobs))}' if args.jobs else ''
+        help_lines.append(
+            f'Run `tabpull add --view <Workbook/View> --sheet "<sheet>"{jobs_flag}` to save a job'
+        )
+    return help_lines
+
+
+def _print_home(
+    sites: Sequence[Sequence[str]],
+    jobs: Sequence[Job],
+    jobs_error: str | None,
+    jobs_file: Path,
+    out_dir: Path,
+) -> None:
+    if sites:
+        sites_table = Table(box=box.SIMPLE_HEAD, expand=True)
+        for col in ('site', 'server', 'tableau site', 'sso'):
+            sites_table.add_column(col)
+        for name, server, site in sites:
+            sites_table.add_row(
+                f'[bold]{escape(name)}[/]',
+                escape(server),
+                escape(site),
+                _sso_badge(name, server),
+            )
+        sites_body: Table | str = sites_table
+    else:
+        sites_body = '0 configured'
+    ui.console.print(
+        Panel(
+            sites_body,
+            title='[bold]Sites[/]',
+            title_align='left',
+            border_style='blue',
+        )
+    )
+    jobs_body: Table | str
+    if jobs_error is not None:
+        jobs_body = escape(jobs_error)
+    elif jobs:
+        jobs_table = Table(box=box.SIMPLE_HEAD, expand=True)
+        for col in ('job', 'site', 'view', 'sheets', 'filters'):
+            jobs_table.add_column(col)
+        for job in jobs:
+            jobs_table.add_row(
+                f'[bold]{escape(job.name)}[/]',
+                escape(job.site),
+                escape(job.view),
+                '\n'.join(escape(sheet) for sheet in job.sheets),
+                str(len(job.filters)),
+            )
+        jobs_body = jobs_table
+    else:
+        jobs_body = '0 saved'
+    ui.console.print(
+        Panel(jobs_body, title='[bold]Jobs[/]', title_align='left', border_style='blue')
+    )
+    ui.console.print(
+        f'  [dim]jobs file[/] {escape(_home_path(jobs_file))}\n'
+        f'  [dim]exports  [/] {escape(_home_path(out_dir))}/<job>/<sheet>.csv'
+    )
+
+
 def _site_rows() -> list[list[str]]:
     rows = []
     for name in list_sites():
@@ -871,42 +1232,37 @@ def _site_rows() -> list[list[str]]:
 
 def _cmd_home(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> None:
     """What an agent or a person needs first: sites, jobs, and where files go."""
+    sites = _site_rows()
+    jobs_error: str | None = None
+    try:
+        jobs = load_jobs(jobs_file)
+    except (JobError, tomllib.TOMLDecodeError, OSError) as e:
+        jobs_error = f'unreadable: {e}'
+        jobs = []
+    help_lines = _home_help(args, sites, jobs)
+    if ui.rich_output():
+        _print_home(sites, jobs, jobs_error, jobs_file, out_dir)
+        if help_lines:
+            body = '\n'.join(f'  {escape(line)}' for line in help_lines)
+            ui.console.print(f'\n  [bold]next[/]\n{body}\n')
+        return
     lines = [
         f'bin: {_toon(_home_path(sys.argv[0]))}',
         'description: Export Tableau dashboard sheet crosstabs to CSV',
         f'jobs_file: {_toon(_home_path(jobs_file))}',
         f'out: {_toon(_home_path(out_dir))}',
     ]
-    help_lines = []
-    if sites := _site_rows():
+    if sites:
         lines += _toon_table('sites', ('name', 'server', 'site'), sites)
     else:
         lines.append('sites: 0 configured')
-        help_lines.append('Run `tabpull setup` to connect a Tableau site')
-    try:
-        jobs = load_jobs(jobs_file)
-    except (JobError, tomllib.TOMLDecodeError, OSError) as e:
-        lines.append(f'jobs: {_toon(f"unreadable: {e}")}')
-        jobs = []
+    if jobs_error is not None:
+        lines.append(f'jobs: {_toon(jobs_error)}')
+    elif jobs:
+        rows = [[j.name, j.site, j.view, len(j.sheets)] for j in jobs]
+        lines += _toon_table('jobs', ('name', 'site', 'view', 'sheets'), rows)
     else:
-        if jobs:
-            rows = [[j.name, j.site, j.view, len(j.sheets)] for j in jobs]
-            lines += _toon_table('jobs', ('name', 'site', 'view', 'sheets'), rows)
-        else:
-            lines.append('jobs: 0 saved')
-    quoted = shlex.join(_file_flags(args))
-    flags = f' {quoted}' if quoted else ''
-    if jobs:
-        help_lines += [
-            f'Run `tabpull run{flags}` to export every job into the out folder',
-            f'Run `tabpull run <name>{flags}` to export one job',
-        ]
-    if sites:
-        # `add` has no --out, so carry only --jobs.
-        jobs_flag = f' --jobs {shlex.quote(str(args.jobs))}' if args.jobs else ''
-        help_lines.append(
-            f'Run `tabpull add --view <Workbook/View> --sheet "<sheet>"{jobs_flag}` to save a job'
-        )
+        lines.append('jobs: 0 saved')
     lines.append(f'help[{len(help_lines)}]:')
     lines += [f'  {line}' for line in help_lines]
     print('\n'.join(lines))

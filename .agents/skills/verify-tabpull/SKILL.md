@@ -57,4 +57,4 @@ There's nothing to stop: each CLI and `verify.py` call closes its own browser. R
 
 - Parallel browser drives are safe: each one opens its own context from that site's auth file, read-only.
 - Don't run `add` drives in parallel when they sign in with the PAT to list views. Signing in with the PAT ends any other session on the same PAT, and that includes the user's own scripts. Flag `add` does not sign in.
-- `tabpull login` and `tabpull setup` need a human (a visible browser, and `getpass` for the secret). Report them as unverified rather than faking a tty.
+- `tabpull login` and `tabpull setup` need a human (a visible browser, and a hidden questionary prompt for the secret). A non-tty `setup` exits with `tabpull setup needs a terminal`. Report them as unverified rather than faking a tty.

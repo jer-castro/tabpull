@@ -80,7 +80,7 @@ tabpull login --site finance        # refresh one site when several are configur
 tabpull --version
 ```
 
-`tabpull` with no command prints the configured sites, the saved jobs, the jobs file, the output folder, and the next commands to try, in [TOON](https://toonformat.dev/). Errors, including an unknown flag, print `error: ...` on stdout with the fix or the command's usage. A usage error exits 2 and any other failure exits 1.
+`tabpull` with no command prints the configured sites, the saved jobs, the jobs file, the output folder, and the next commands to try. A terminal shows those as panels; a pipe gets the same listing in [TOON](https://toonformat.dev/). Errors, including an unknown flag, print `error: ...` on stdout with the fix or the command's usage. A usage error exits 2 and any other failure exits 1.
 
 `add` saves the job and prints the `run` command. It does not export. With `--view` and at least one `--sheet`, `add` writes the job and does not prompt. Leave those flags off and it asks.
 
@@ -88,7 +88,7 @@ Flag `add` still opens the view far enough to refuse a story, with the same mess
 
 `--filter` is `Field=a|b` or `Field=min..max`, and ` @Sheet` names the worksheet. A filter with no sheet is applied on the first sheet in the job, and tabpull prints that. With one configured site, `--site` can be omitted. With several, pass `--site` or pick one at the prompt.
 
-`run` keeps going when one job fails, then prints `done: <ok>/<total> jobs exported`. If any job failed it prints the `tabpull run` command that reruns only those and exits 1. Each job uses the site it names. When that site's SSO session is missing or expired, tabpull opens the sign-in window if you're at a terminal, and otherwise exits and tells you to run `tabpull login --site <name>`. Crosstab CSVs are rewritten from Tableau's UTF-16 tab-separated format to plain UTF-8 CSV.
+`run` keeps going when one job fails. A terminal shows a progress bar and a summary panel titled `done: <ok>/<total> jobs exported`; a pipe prints that same `done` line and a check or cross per job. If any job failed it prints the `tabpull run` command that reruns only those and exits 1. Each job uses the site it names. When that site's SSO session is missing or expired, tabpull opens the sign-in window if you're at a terminal, and otherwise exits and tells you to run `tabpull login --site <name>`. Crosstab CSVs are rewritten from Tableau's UTF-16 tab-separated format to plain UTF-8 CSV.
 
 `run` writes `<job>/<sheet>.csv` under the folder you run it from (spaces in names become `_`). Point one run at another jobs file or output folder, before or after the subcommand:
 
@@ -112,8 +112,6 @@ Tokens, cookies, and jobs stay in the config directory, and they stay put when y
 <config>/tabpull/auth/<name>.json     SSO cookies; mode 600
 ./<job>/<sheet>.csv                   exports, relative to where you ran tabpull
 ```
-
-Older versions kept exports in the data directory (`$XDG_DATA_HOME/tabpull/exports`, `~/.local/share/tabpull/exports`, or `%LOCALAPPDATA%\tabpull\exports`) and, on macOS, in `~/Library/Application Support/tabpull/exports`. tabpull no longer touches those folders, so move or delete them yourself. On Linux and Windows, SSO cookies still move from the data directory into the config directory on the next run.
 
 The token secret is not printed. Setup and login print the server and the Tableau site.
 

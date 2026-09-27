@@ -4,19 +4,22 @@ Asks for a local site name, a dashboard URL, a personal access token, and an SSO
 Safe to re-run: Enter keeps the current values for that site.
 """
 
-import ctypes
-import getpass
 import itertools
-import os
 import platform
 import shutil
 import sys
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 
+import questionary
 from playwright.sync_api import sync_playwright
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
 from tableauserverclient.server.endpoint.exceptions import TableauError
 
+from tabpull import ui
 from tabpull.tableau import (
     Settings,
     check_site_name,
@@ -29,22 +32,6 @@ from tabpull.tableau import (
     site_env_path,
     sso_login,
     upsert_env,
-)
-
-if os.name == 'nt':
-    std_output_handle = -11
-    enable_virtual_terminal_processing = 0x0004
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    handle = kernel32.GetStdHandle(std_output_handle)
-    mode = ctypes.c_uint()
-    if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-        kernel32.SetConsoleMode(handle, mode.value | enable_virtual_terminal_processing)
-
-_COLOR = sys.stdout.isatty() and 'NO_COLOR' not in os.environ
-BOLD, DIM, BLUE, GREEN, YELLOW, RESET = (
-    ('\033[1m', '\033[2m', '\033[34m', '\033[32m', '\033[33m', '\033[0m')
-    if _COLOR
-    else ('',) * 6
 )
 
 
@@ -68,40 +55,49 @@ _run = _Run()
 TOTAL_STAGES = 3
 
 
-def _clear() -> None:
-    if sys.stdout.isatty():
-        print('\033[2J\033[3J\033[H', end='')
-
-
 def banner(title: str) -> None:
-    _clear()
-    print(
-        f'\n  {BOLD}{title}{RESET}\n'
-        f'  {DIM}{TOTAL_STAGES} stages. Each site keeps its own token and browser session.{RESET}\n'
+    ui.console.clear()
+    ui.console.print(
+        Panel(
+            f'[dim]{TOTAL_STAGES} stages. Each site keeps its own token and browser session.[/]',
+            title=f'[bold]{escape(title)}[/]',
+            title_align='left',
+            border_style='blue',
+        )
     )
     pause('Press Enter to start…')
 
 
 def stage(name: str) -> None:
     number = next(_run.stages)
-    _clear()
-    print(f'\n  {DIM}Stage {number} of {TOTAL_STAGES}{RESET}  {BOLD}{name}{RESET}\n')
+    ui.console.clear()
+    ui.console.print(
+        Rule(
+            f'[dim]Stage {number} of {TOTAL_STAGES}[/]  [bold]{escape(name)}',
+            align='left',
+            style='blue',
+        )
+    )
+
+
+def _line(markup: str) -> None:
+    ui.console.print(f'  {markup}', soft_wrap=True)
 
 
 def say(text: str) -> None:
-    print(f'  {text}')
+    _line(escape(text))
 
 
 def step(text: str) -> None:
-    print(f'  {BLUE}•{RESET} {text}')
+    _line(f'[blue]•[/] {escape(text)}')
 
 
 def note(text: str) -> None:
-    print(f'  {DIM}{text}{RESET}')
+    _line(f'[dim]{escape(text)}[/]')
 
 
 def warn(text: str) -> None:
-    print(f'  {YELLOW}⚠ {text}{RESET}')
+    _line(f'[yellow]⚠ {escape(text)}[/]')
 
 
 def open_url(url: str) -> None:
@@ -116,27 +112,41 @@ def open_url(url: str) -> None:
 
 
 def pause(text: str = 'Press Enter when done…') -> None:
-    input(f'\n  {DIM}{text}{RESET}')
+    ui.ask(questionary.press_any_key_to_continue(text, style=ui.STYLE))
 
 
 def confirm(question: str, *, default: bool = False) -> bool:
-    hint = 'Y/n' if default else 'y/N'
-    answer = input(f'\n  {question} [{hint}] ').strip().lower()
-    return default if not answer else answer in {'y', 'yes'}
+    return bool(ui.ask(questionary.confirm(question, default=default, style=ui.STYLE)))
+
+
+def _checked(check: Callable[[str], object]) -> Callable[[str], bool | str]:
+    """Questionary validator from a function that raises ValueError."""
+
+    def validate(value: str) -> bool | str:
+        try:
+            check(value.strip())
+        except ValueError as e:
+            return str(e)
+        return True
+
+    return validate
 
 
 def ask(key: str, prompt: str) -> str:
-    """Visible input; on re-runs Enter keeps the value already saved for this site."""
+    """Visible input, prefilled with the value already saved for this site."""
     existing = read_env_file(_run.env_path).get(key, '')
-    suffix = f' {DIM}[{existing}]{RESET}' if existing else ''
-    return input(f'  {prompt}{suffix} ').strip() or existing
+    answer = ui.ask(questionary.text(prompt, default=existing, style=ui.STYLE))
+    return str(answer).strip() or existing
 
 
 def ask_secret(key: str, prompt: str) -> str:
     """Hidden input; on re-runs Enter keeps the value already saved for this site."""
     existing = read_env_file(_run.env_path).get(key, '')
-    suffix = ' (Enter keeps the current one)' if existing else ''
-    return getpass.getpass(f'  {prompt}{suffix} ').strip() or existing
+    instruction = '(Enter keeps the current one)' if existing else None
+    answer = ui.ask(
+        questionary.password(prompt, instruction=instruction, style=ui.STYLE)
+    )
+    return str(answer).strip() or existing
 
 
 def write_env(key: str, value: str) -> None:
@@ -146,26 +156,26 @@ def write_env(key: str, value: str) -> None:
 
 
 def finish(next_step: str) -> None:
-    _clear()
-    print(f'\n  {GREEN}{BOLD}Done.{RESET}\n')
+    ui.console.clear()
+    ui.console.print(Rule('[green bold]Done', align='left', style='green'))
     for key in dict.fromkeys(_run.written):
-        print(f'  {GREEN}✓{RESET} {key} → {_run.env_path}')
+        _line(f'[green]✓[/] {key} → {escape(str(_run.env_path))}')
     for item in _run.skipped:
         warn(item)
     note(f'Jobs default to {jobs_path()}.')
     note('Exports go to the folder you run tabpull from, or --out.')
-    print(f'\n  Next: {BOLD}{next_step}{RESET}\n')
+    _line(f'\n  Next: [bold]{escape(next_step)}[/]\n')
 
 
 def _prompt_site_name() -> str:
     note('Jobs refer to this name. Letters, numbers, ".", "_" and "-".')
     note('The Tableau site content URL is a good name when you have one.')
-    while True:
-        name = input('\n  Site name: ').strip()
-        try:
-            return check_site_name(name)
-        except ValueError as e:
-            warn(str(e))
+    name = ui.ask(
+        questionary.text(
+            'Site name', validate=_checked(check_site_name), style=ui.STYLE
+        )
+    )
+    return check_site_name(str(name).strip())
 
 
 def _site_stage(preset: str | None) -> tuple[str, str, str]:
@@ -180,15 +190,22 @@ def _site_stage(preset: str | None) -> tuple[str, str, str]:
         )
     step('In your usual browser, open any dashboard you normally crosstab from.')
     step('Copy the full URL from the address bar.')
+    validate = _checked(parse_tableau_url)
     while True:
-        url = input('\n  Paste the URL: ').strip()
-        if not url and server:
+        url = str(
+            ui.ask(
+                questionary.text(
+                    'Dashboard URL',
+                    validate=lambda value: (
+                        (not value.strip() and bool(server)) or validate(value)
+                    ),
+                    style=ui.STYLE,
+                )
+            )
+        ).strip()
+        if not url:
             return name, server.rstrip('/'), env.get('TABLEAU_SITE', '')
-        try:
-            parsed = parse_tableau_url(url)
-        except ValueError as e:
-            warn(str(e))
-            continue
+        parsed = parse_tableau_url(url)
         say(f'Server: {parsed.server}')
         say(f'Site:   {parsed.site or "(default site)"}')
         say(f'Name:   {name}')
@@ -211,14 +228,13 @@ def _pat_stage(name: str, server: str, site: str) -> Settings:
         'No Personal Access Tokens section? Your site admin has disabled them for your role.'
     )
     while True:
-        print()
         settings = Settings(
             server=server,
             site=site,
-            pat_name=ask('TABLEAU_PAT_NAME', 'Token name:'),
+            pat_name=ask('TABLEAU_PAT_NAME', 'Token name'),
             name=name,
             auth_path=_run.auth_path,
-            pat_secret=ask_secret('TABLEAU_PAT_SECRET', 'Token secret:'),
+            pat_secret=ask_secret('TABLEAU_PAT_SECRET', 'Token secret'),
         )
         say('Checking the token…')
         try:
@@ -232,7 +248,7 @@ def _pat_stage(name: str, server: str, site: str) -> Settings:
                 'PAT sign-in failed; saved anyway. Re-run tabpull setup once it works.'
             )
         else:
-            say(f'{GREEN}✓ Signed in.{RESET}')
+            _line('[green]✓ Signed in.[/]')
         write_env('TABLEAU_PAT_NAME', settings.pat_name)
         write_env('TABLEAU_PAT_SECRET', settings.pat_secret)
         return settings
@@ -265,6 +281,9 @@ def main(site_name: str | None = None) -> str:
             check_site_name(site_name)
         except ValueError as e:
             raise SystemExit(str(e)) from e
+    if not ui.interactive():
+        msg = 'tabpull setup needs a terminal: it asks for a token and opens a browser.'
+        raise SystemExit(msg)
     _run.reset()
     banner('tabpull setup')
     name, server, site = _site_stage(site_name)
