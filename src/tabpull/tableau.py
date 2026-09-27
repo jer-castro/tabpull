@@ -5,6 +5,7 @@ config directory when `XDG_CONFIG_HOME` is set, and the usual OS folder otherwis
 Exports go to the working directory, so they are not managed here.
 """
 
+import importlib.metadata
 import os
 import re
 import shutil
@@ -29,7 +30,6 @@ SETTING_KEYS = (
 LOGIN_TIMEOUT_S = 300
 LOGIN_POLL_MS = 2000
 BROWSER_CHANNELS = ('chrome', 'msedge', None)
-CHROMIUM_INSTALL = 'uvx --from tabpull playwright install chromium'
 _APP = 'tabpull'
 _SITE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 
@@ -272,13 +272,23 @@ def rest_session(settings: Settings) -> Iterator[tsc.Server]:
         yield server
 
 
+def _chromium_install() -> str:
+    """Install Chromium into the cache this Playwright version searches.
+
+    `uvx playwright==<version>` uses the same browser revision and the default
+    `ms-playwright` cache as the Playwright package installed with tabpull.
+    """
+    version = importlib.metadata.version('playwright')
+    return f'uvx playwright=={version} install chromium'
+
+
 def launch_browser(pw: Playwright, *, headless: bool) -> Browser:
     for channel in BROWSER_CHANNELS:
         try:
             return pw.chromium.launch(channel=channel, headless=headless)
         except PlaywrightError:
             continue
-    msg = f'No Chrome or Edge found. Install one, or run: {CHROMIUM_INSTALL}'
+    msg = f'No Chrome or Edge found. Install one, or run: {_chromium_install()}'
     raise SystemExit(msg)
 
 
