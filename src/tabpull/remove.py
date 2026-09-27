@@ -7,27 +7,11 @@ from rich.markup import escape
 from rich.panel import Panel
 
 from tabpull import ui
-from tabpull.jobs import Job, JobError, load_jobs, save_jobs
+from tabpull.jobs import Job, JobError, delete_jobs, saved_jobs_or_exit
 
 
 def _saved(jobs: Sequence[Job]) -> str:
     return ', '.join(job.name for job in jobs)
-
-
-def _load(path: Path) -> list[Job]:
-    try:
-        return load_jobs(path)
-    except (JobError, tomllib.TOMLDecodeError, OSError) as e:
-        msg = f'{path}: {e}'
-        raise SystemExit(msg) from e
-
-
-def _require_known(names: Sequence[str], jobs: Sequence[Job]) -> None:
-    unknown = set(names) - {job.name for job in jobs}
-    if not unknown:
-        return
-    msg = f'Unknown jobs: {", ".join(sorted(unknown))}. Saved jobs: {_saved(jobs)}'
-    raise SystemExit(msg)
 
 
 def _pick(jobs: Sequence[Job]) -> list[str]:
@@ -86,21 +70,19 @@ def _rewrite(path: Path, jobs: Sequence[Job], names: Sequence[str]) -> None:
     drop = set(names)
     removed = [job for job in jobs if job.name in drop]
     try:
-        save_jobs(path, [job for job in jobs if job.name not in drop])
-    except OSError as e:
+        delete_jobs(path, names)
+    except JobError as e:
+        raise SystemExit(str(e)) from e
+    except (tomllib.TOMLDecodeError, OSError) as e:
         msg = f'{path}: {e}'
         raise SystemExit(msg) from e
     _report(path, removed)
 
 
 def remove_jobs(path: Path, names: Sequence[str]) -> None:
-    jobs = _load(path)
-    if not jobs:
-        msg = f'No jobs in {path}. Run: tabpull add'
-        raise SystemExit(msg)
+    jobs = saved_jobs_or_exit(path)
     chosen = _names_to_remove(jobs, names)
     if not chosen:
         print('Nothing removed.')
         return
-    _require_known(chosen, jobs)
     _rewrite(path, jobs, chosen)

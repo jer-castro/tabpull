@@ -8,7 +8,7 @@ tabpull exports named worksheets from a published Tableau dashboard to UTF-8 CSV
 uv tool install git+https://github.com/jer-castro/tabpull
 ```
 
-That installs the `tabpull` command. `setup`, `add`, `remove`, `run`, and `login` are subcommands. Pin a tag with `@vX.Y.Z` on the URL. Upgrade with `uv tool upgrade tabpull`.
+That installs the `tabpull` command. Bare `tabpull` at a terminal opens an interactive screen. `setup`, `add`, `remove`, `run`, and `login` are subcommands and work the same with or without it. Pin a tag with `@vX.Y.Z` on the URL. Upgrade with `uv tool upgrade tabpull`.
 
 ## Why Embedding API
 
@@ -32,7 +32,7 @@ The browser is installed Chrome, then Edge. If neither is installed, tabpull pri
 ## Use
 
 ```sh
-tabpull                             # sites, saved jobs, and where exports go
+tabpull                             # interactive screen at a terminal; a listing when piped
 tabpull add                         # search a view or paste its URL, pick sheets and filters
 tabpull add --site finance \
   --view SalesWorkbook/Overview \
@@ -50,7 +50,9 @@ tabpull login --site finance
 tabpull --version
 ```
 
-With no command, tabpull prints configured sites, saved jobs, the jobs file, the output folder, and the next commands. A terminal shows panels. A pipe gets the same listing in [TOON](https://toonformat.dev/). Errors, including an unknown flag, print `error: ...` on stdout. A usage error exits 2. Any other failure exits 1.
+With no command at a terminal, tabpull opens a full-screen list of sites and jobs. Open a job to change its filters (values or range bounds), parameters, sheets, view, site, and name. Each change is checked and saved to the jobs file right away. `r` runs the selected or marked jobs, `a` adds, `d` removes after a confirm, `s` and `l` run setup and login. Run, add, setup, and login leave the screen and run the normal subcommand in the terminal, then come back when you press Enter. The footer lists the keys, `?` shows all of them, `q` quits.
+
+With no command and no terminal (a pipe or a script), tabpull prints configured sites, saved jobs, the jobs file, the output folder, and the next commands in [TOON](https://toonformat.dev/). It never waits for keys. Errors, including an unknown flag, print `error: ...` on stdout. A usage error exits 2. Any other failure exits 1.
 
 `add` saves the job and prints the `run` command. It does not export. With `--view` and at least one `--sheet`, it writes the job and does not prompt. Leave those flags off and it asks.
 
@@ -102,7 +104,7 @@ The token secret is not printed. Setup and login print the server and the Tablea
 
 ## Jobs file
 
-`add` writes this. `remove` rewrites it from the jobs that remain. You can edit the file by hand:
+`add` writes this. `remove` and edits on the interactive screen rewrite it from the saved jobs, which drops comments. You can edit the file by hand:
 
 ```toml
 [[job]]

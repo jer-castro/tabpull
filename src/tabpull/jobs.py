@@ -1,8 +1,10 @@
 import json
 import re
 import tomllib
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 
 @dataclass(frozen=True)
@@ -10,6 +12,19 @@ class ValuesFilter:
     field: str
     values: list[str]
     sheet: str = ''
+    kind: ClassVar[str] = 'values'
+
+    @property
+    def pick_list(self) -> str:
+        return '|'.join(self.values)
+
+    @property
+    def bounds(self) -> tuple[str, str]:
+        return '', ''
+
+    @property
+    def shown(self) -> str:
+        return self.pick_list
 
 
 @dataclass(frozen=True)
@@ -18,6 +33,19 @@ class RangeFilter:
     sheet: str
     min: str | None = None
     max: str | None = None
+    kind: ClassVar[str] = 'range'
+
+    @property
+    def pick_list(self) -> str:
+        return ''
+
+    @property
+    def bounds(self) -> tuple[str, str]:
+        return self.min or '', self.max or ''
+
+    @property
+    def shown(self) -> str:
+        return '..'.join(self.bounds)
 
 
 @dataclass(frozen=True)
@@ -80,14 +108,66 @@ def parse_job(raw: object) -> Job:
         raise JobError(msg) from e
 
 
-def load_jobs(path: Path) -> list[Job]:
-    if not path.exists():
-        return []
-    raw_jobs = tomllib.loads(path.read_text(encoding='utf-8')).get('job', [])
+def _jobs_from_text(text: str) -> list[Job]:
+    raw_jobs = tomllib.loads(text).get('job', [])
     if not isinstance(raw_jobs, list):
         msg = '`job` must be an array of tables'
         raise JobError(msg)
     return [parse_job(raw) for raw in raw_jobs]
+
+
+def load_jobs(path: Path) -> list[Job]:
+    if not path.exists():
+        return []
+    return _jobs_from_text(path.read_text(encoding='utf-8'))
+
+
+def save_jobs(path: Path, jobs: Sequence[Job]) -> None:
+    text = '\n'.join(job_to_toml(job) for job in jobs)
+    _jobs_from_text(text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scratch = path.with_name(path.name + '.tmp')
+    scratch.write_text(text, encoding='utf-8')
+    scratch.replace(path)
+
+
+def saved_jobs_or_exit(path: Path) -> list[Job]:
+    try:
+        jobs = load_jobs(path)
+    except (JobError, tomllib.TOMLDecodeError, OSError) as e:
+        msg = f'{path}: {e}'
+        raise SystemExit(msg) from e
+    if not jobs:
+        msg = f'No jobs in {path}. Run: tabpull add'
+        raise SystemExit(msg)
+    return jobs
+
+
+def check_known(names: Sequence[str], jobs: Sequence[Job]) -> None:
+    if unknown := sorted(set(names) - {job.name for job in jobs}):
+        saved = ', '.join(job.name for job in jobs) or 'none'
+        msg = f'Unknown jobs: {", ".join(unknown)}. Saved jobs: {saved}'
+        raise JobError(msg)
+
+
+def update_job(path: Path, old_name: str, job: Job) -> list[Job]:
+    jobs = load_jobs(path)
+    check_known([old_name], jobs)
+    index = next(i for i, saved in enumerate(jobs) if saved.name == old_name)
+    if job.name != old_name and any(saved.name == job.name for saved in jobs):
+        msg = f'A job named {job.name!r} already exists in {path}.'
+        raise JobError(msg)
+    jobs[index] = job
+    save_jobs(path, jobs)
+    return jobs
+
+
+def delete_jobs(path: Path, names: Sequence[str]) -> list[Job]:
+    jobs = load_jobs(path)
+    check_known(names, jobs)
+    kept = [job for job in jobs if job.name not in names]
+    save_jobs(path, kept)
+    return kept
 
 
 def _toml(value: object) -> str:
@@ -115,11 +195,6 @@ def job_to_toml(job: Job) -> str:
     ]
     lines += [f'{key} = {_toml(value)}' for key, value in fields.items() if value]
     return '\n'.join(lines) + '\n'
-
-
-def save_jobs(path: Path, jobs: list[Job]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('\n'.join(job_to_toml(job) for job in jobs), encoding='utf-8')
 
 
 def slug(text: str) -> str:

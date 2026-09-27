@@ -7,7 +7,8 @@ Commands:
   run    export jobs from the jobs file into the current folder
   login  refresh a site's SSO session
 
-Run tabpull with no command to see configured sites and saved jobs.
+Run tabpull with no command at a terminal to open the interactive screen.
+Piped, it prints configured sites and saved jobs.
 """
 
 import argparse
@@ -28,7 +29,7 @@ from tabpull.add import add_job, add_job_from_flags
 from tabpull.cli import VERSION_FLAGS, version
 from tabpull.filters import filters_for_run, parse_filter_spec
 from tabpull.home import file_flags, show_home
-from tabpull.jobs import JobError, load_jobs
+from tabpull.jobs import JobError, check_known, saved_jobs_or_exit
 from tabpull.remove import remove_jobs
 from tabpull.run import open_report, run_jobs
 from tabpull.tableau import (
@@ -126,22 +127,10 @@ def _cmd_add(args: argparse.Namespace, jobs_file: Path) -> None:
 
 
 def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
-    try:
-        jobs = load_jobs(jobs_file)
-    except (JobError, tomllib.TOMLDecodeError, OSError) as e:
-        msg = f'{jobs_file}: {e}'
-        raise SystemExit(msg) from e
-    if not jobs:
-        msg = f'No jobs in {jobs_file}. Run: tabpull add'
-        raise SystemExit(msg)
-    if unknown := set(args.names) - {job.name for job in jobs}:
-        msg = (
-            f'Unknown jobs: {", ".join(sorted(unknown))}. '
-            f'Saved jobs: {", ".join(job.name for job in jobs)}'
-        )
-        raise SystemExit(msg)
+    jobs = saved_jobs_or_exit(jobs_file)
     selected = [job for job in jobs if not args.names or job.name in args.names]
     try:
+        check_known(args.names, jobs)
         overrides = [parse_filter_spec(spec) for spec in args.filter_specs or []]
         selected = [filters_for_run(job, overrides) for job in selected]
     except JobError as e:
@@ -311,6 +300,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             remove_jobs(jobs_file, args.names)
         case 'run':
             return _cmd_run(args, jobs_file, out_dir)
+        case _ if ui.interactive():
+            from tabpull.tui import run_tui  # noqa: PLC0415
+
+            run_tui(jobs_file, out_dir)
         case _:
             show_home(args, jobs_file, out_dir)
     return 0

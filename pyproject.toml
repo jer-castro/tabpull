@@ -12,6 +12,7 @@ dependencies = [
     "questionary==2.1.1",
     "rich==15.0.0",
     "tableauserverclient==0.41",
+    "textual==8.2.8",
 ]
 
 [project.urls]

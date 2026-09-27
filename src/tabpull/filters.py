@@ -113,17 +113,42 @@ def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
         raise JobError(msg)
     if '..' in value:
         low, _, high = value.partition('..')
-        low, high = low.strip() or None, high.strip() or None
-        if low is None and high is None:
+        if not low.strip() and not high.strip():
             msg = (
                 f'filter {spec!r} should look like Field=a|b or Field=min..max, '
                 'with an optional " @Sheet"'
             )
             raise JobError(msg)
-        normalize_range_bound(low)
-        normalize_range_bound(high)
-        return RangeFilter(field_name, sheet, low, high)
-    return ValuesFilter(field_name, split_values(value), sheet)
+        return make_filter(field_name, sheet, low=low, high=high)
+    return make_filter(field_name, sheet, values=value)
+
+
+def make_filter(
+    field_name: str,
+    sheet: str,
+    *,
+    values: str | None = None,
+    low: str | None = None,
+    high: str | None = None,
+) -> ValuesFilter | RangeFilter:
+    field_name, sheet = field_name.strip(), sheet.strip()
+    if not field_name:
+        msg = 'filter needs a field name'
+        raise JobError(msg)
+    if values is not None:
+        return ValuesFilter(field_name, split_values(values), sheet)
+    low, high = (low or '').strip() or None, (high or '').strip() or None
+    if low is None and high is None:
+        msg = f'range filter {field_name!r} needs a min, a max, or both'
+        raise JobError(msg)
+    normalize_range_bound(low)
+    normalize_range_bound(high)
+    return RangeFilter(field_name, sheet, low, high)
+
+
+def format_filter(item: ValuesFilter | RangeFilter) -> str:
+    spec = f'{item.field}={item.shown}'
+    return f'{spec} @{item.sheet}' if item.sheet else spec
 
 
 def parse_param_spec(spec: str) -> tuple[str, str]:

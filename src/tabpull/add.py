@@ -17,6 +17,7 @@ from rich.table import Table
 from tabpull import ui
 from tabpull.embed import INSPECT_JS, SheetInfo, ViewInfo, open_view
 from tabpull.filters import (
+    format_filter,
     normalize_range_bound,
     parse_filter_spec,
     parse_param_spec,
@@ -257,14 +258,6 @@ def _using_site(settings: Settings) -> None:
     ui.console.print(f'[dim]{escape(detail)}[/]', soft_wrap=True)
 
 
-def _saved_filter(item: ValuesFilter | RangeFilter) -> str:
-    if isinstance(item, RangeFilter):
-        shown = f'{item.min or ""}..{item.max or ""}'
-    else:
-        shown = '|'.join(item.values)
-    return f'{item.field}={shown} @{item.sheet}'
-
-
 def append_job(path: Path, job: Job) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = job_to_toml(job)
@@ -275,7 +268,7 @@ def append_job(path: Path, job: Job) -> None:
         print(f'\nSaved job {job.name!r} to {path}:\n\n{text}')
         print(f'Run it: tabpull run {job.name}')
         return
-    filters = '; '.join(_saved_filter(item) for item in job.filters) or '-'
+    filters = '; '.join(format_filter(item) for item in job.filters) or '-'
     params = '; '.join(f'{key}={value}' for key, value in job.params.items()) or '-'
     body = '\n'.join(
         (
