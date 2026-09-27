@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  Dashboard-only sheets included. Embedding API with your SSO session; a PAT finds the views.
+  Dashboard-only sheets are included. tabpull uses the Embedding API with your SSO session, and a personal access token finds the views.
 </p>
 
 <p align="center">
@@ -83,7 +83,7 @@ tabpull --version
 
 `add` saves the job and prints the `run` command. It does not export. With `--view` and at least one `--sheet`, `add` writes the job and does not prompt. Leave those flags off and it asks.
 
-Flag `add` still opens the view far enough to refuse a story, with the same message as interactive add: `Stories are not supported; use the dashboard inside it.` `run` refuses a story the same way, before it exports.
+`add` with `--view` and `--sheet` still opens the view far enough to refuse a story, with the same message as interactive add: `Stories are not supported; use the dashboard inside it.` `run` refuses a story the same way, before it exports.
 
 `--filter` is `Field=a|b` or `Field=min..max`, and ` @Sheet` names the worksheet. Either side of a range may be omitted, but not both: `Field=min..` runs from that date through the latest value the filter allows, and `Field=..max` runs from the earliest value through that date. An open side needs a range filter on that field in the workbook, since tabpull reads its endpoint from there. A filter with no sheet is applied on the first sheet in the job, and tabpull prints that. With one configured site, `--site` can be omitted. With several, pass `--site` or pick one at the prompt.
 
@@ -144,7 +144,7 @@ filters = [
 params = { "Top N" = "25" }
 ```
 
-Parameters are set first, then filters, in the same order you'd set them in the dashboard. A filter applies on `sheet`. When `sheet` is omitted, tabpull applies that filter on the first entry in `sheets` and prints a line saying so. It does not copy the filter onto every sheet. Other sheets change only the way that same filter changes them in the dashboard.
+Parameters are set first, then filters, in the same order you'd set them in the dashboard. A filter applies on `sheet`. When `sheet` is omitted, tabpull applies that filter on the first entry in `sheets` and prints a line saying so. It does not copy the filter onto every sheet. Other sheets update only as they would in the dashboard when that filter changes.
 
 Dates written as `YYYY-MM-DD` or `M/D/YYYY`, and plain numbers, are converted for range filters. An impossible date such as `2024-02-31` or `2/31/2024` is rejected. A relative date (`yesterday`, `last week`, `today`, `7 days ago`) or a date computed at run time is refused. Use a parameter, or write an absolute `YYYY-MM-DD` or `M/D/YYYY` date. Omit `min` or `max` to leave that end open: `{ field = "Order Date", min = "2026-09-01", sheet = "Totals" }` runs from that date through the latest value the filter allows, and `{ field = "Order Date", max = "2026-09-25", sheet = "Totals" }` runs from the earliest value through that date.
 
