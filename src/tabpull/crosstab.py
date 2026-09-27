@@ -85,7 +85,7 @@ HOST_PAGE = string.Template("""<!doctype html>
 <script type="module">
 try {
   const api = await import($script_url);
-  window.tableauEnums = { CrosstabFileFormat: api.CrosstabFileFormat, FilterUpdateType: api.FilterUpdateType };
+  window.tableauEnums = { CrosstabFileFormat: api.CrosstabFileFormat, FilterDomainType: api.FilterDomainType, FilterUpdateType: api.FilterUpdateType };
   const viz = new api.TableauViz();
   viz.src = $view_url;
   viz.toolbar = 'hidden';
@@ -157,12 +157,25 @@ APPLY_JS = """async ({ filters, params }) => {
     if (/^-?\\d+(\\.\\d+)?$/.test(v)) return Number(v);
     throw new Error(v + ' is a relative date or a date computed at run time; use YYYY-MM-DD or M/D/YYYY');
   };
+  // applyRangeFilterAsync refuses a null bound, so an open side takes the filter's own endpoint.
+  const domainOf = async (ws, f) => {
+    const found = (await ws.getFiltersAsync()).find((x) => x.fieldName === f.field && x.filterType === 'range');
+    if (!found) throw new Error('No range filter on ' + f.field + ' in ' + f.sheet + ' to take an open end from; give both min and max');
+    return found.getDomainAsync(window.tableauEnums.FilterDomainType.Database);
+  };
   for (const [name, value] of Object.entries(params)) await viz.workbook.changeParameterValueAsync(name, value);
   for (const f of filters) {
     const ws = worksheets.find((w) => w.name === f.sheet);
     if (!ws) throw new Error('Sheet not in this view: ' + f.sheet);
-    if (f.values) await ws.applyFilterAsync(f.field, f.values, window.tableauEnums.FilterUpdateType.Replace);
-    else await ws.applyRangeFilterAsync(f.field, { min: toValue(f.min), max: toValue(f.max) });
+    if (f.values) {
+      await ws.applyFilterAsync(f.field, f.values, window.tableauEnums.FilterUpdateType.Replace);
+      continue;
+    }
+    const domain = f.min == null || f.max == null ? await domainOf(ws, f) : null;
+    await ws.applyRangeFilterAsync(f.field, {
+      min: f.min == null ? domain.min.value : toValue(f.min),
+      max: f.max == null ? domain.max.value : toValue(f.max),
+    });
   }
 }"""
 
@@ -308,18 +321,24 @@ def _note_default_sheet(job: Job, field_name: str, sheet: str) -> None:
     )
 
 
-def _filter_target(
-    item: ValuesFilter | RangeFilter, default_sheet: str
-) -> tuple[str, str]:
-    return item.field, item.sheet or default_sheet
+def _overrides(
+    item: ValuesFilter | RangeFilter,
+    existing: ValuesFilter | RangeFilter,
+    default_sheet: str,
+) -> bool:
+    return existing.field == item.field and (
+        not item.sheet or (existing.sheet or default_sheet) == item.sheet
+    )
 
 
 def filters_for_run(job: Job, overrides: Sequence[ValuesFilter | RangeFilter]) -> Job:
-    """Use `overrides` for this run instead of the saved filter on that field and sheet.
+    """Use `overrides` for this run instead of the saved filters on the same field.
 
-    The same overrides apply to every selected job. An override that names no sheet
-    is applied on the first sheet, and that is printed. A field the job does not
-    filter is added. Nothing is written to the jobs file.
+    The same overrides apply to every selected job. An override with ` @Sheet`
+    replaces that sheet's filter on the field; one with no sheet replaces the
+    field's filter on every sheet. A field the job does not filter there is added,
+    on the first sheet when no sheet is named, and that is printed. Nothing is
+    written to the jobs file.
     """
     if not overrides:
         return job
@@ -329,22 +348,17 @@ def filters_for_run(job: Job, overrides: Sequence[ValuesFilter | RangeFilter]) -
     default = job.sheets[0]
     filters: list[ValuesFilter | RangeFilter] = list(job.filters)
     for item in overrides:
+        if any(_overrides(item, existing, default) for existing in filters):
+            filters = [
+                replace(item, sheet=item.sheet or existing.sheet)
+                if _overrides(item, existing, default)
+                else existing
+                for existing in filters
+            ]
+            continue
         if not item.sheet:
             _note_default_sheet(job, item.field, default)
-        placed = replace(item, sheet=item.sheet or default)
-        target = _filter_target(placed, default)
-        replaced = False
-        kept: list[ValuesFilter | RangeFilter] = []
-        for existing in filters:
-            if _filter_target(existing, default) != target:
-                kept.append(existing)
-                continue
-            if not replaced:
-                kept.append(placed)
-                replaced = True
-        if not replaced:
-            kept.append(placed)
-        filters = kept
+        filters.append(replace(item, sheet=item.sheet or default))
     return replace(job, filters=filters)
 
 
@@ -958,7 +972,7 @@ def add_job(settings: Settings, jobs_path: Path, name: str | None = None) -> Non
 def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
     """Parse `Field=a|b` or `Field=min..max`, with an optional ` @Sheet`.
 
-    Either side of `min..max` may be empty (`min..` or `..max`). A relative date
+    Either side of `min..max` may be empty (`min..` or `..max`), not both. A relative date
     or a date computed at run time is refused.
     """
     body, sep, sheet = spec.rpartition(' @')
@@ -975,6 +989,12 @@ def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
         raise JobError(msg)
     if '..' in value:
         low, _, high = value.partition('..')
+        if not low.strip() and not high.strip():
+            msg = (
+                f'filter {spec!r} should look like Field=a|b or Field=min..max, '
+                'with an optional " @Sheet"'
+            )
+            raise JobError(msg)
         return RangeFilter(
             field_name,
             sheet,
@@ -1411,10 +1431,10 @@ def _parser() -> tuple[_Parser, dict[str, _Parser]]:
         epilog="""writes <out>/<job>/<sheet>.csv, spaces in names become _
 
 --filter uses the same Field=a|b or Field=min..max syntax as add, including
-an open side (min.. or ..max). It applies to every job in this run, replaces
-that job's saved filter on the same field and sheet, and does not rewrite the
-jobs file. A field the job does not have is added. With no @Sheet, that is
-the first sheet.
+an open side (min.. or ..max). It applies to every job in this run and
+does not rewrite the jobs file. With no @Sheet it replaces the job's saved
+filter on that field on every sheet; with @Sheet, only that sheet's. A field
+the job does not filter is added, on @Sheet or else the first sheet.
 
 examples:
   tabpull run

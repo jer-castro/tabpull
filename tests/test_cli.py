@@ -887,8 +887,7 @@ sheets = ["Detail"]
         crosstab.RangeFilter('Order Date', 'Detail', '2026-10-01', None),
         crosstab.ValuesFilter('Ship Mode', ['First Class'], 'Detail'),
     ]
-    assert "daily: filter 'Order Date' names no sheet" in note
-    assert "applying it on 'Totals'" in note
+    assert 'daily: filter' not in note
     assert "weekly: filter 'Order Date' names no sheet" in note
     assert "applying it on 'Detail'" in note
     assert 'Ship Mode' not in note

@@ -47,7 +47,9 @@ READ_RANGE_JS = """async ({ sheet, field }) => {
   const f = (await ws.getFiltersAsync()).find((x) => x.fieldName === field);
   if (!f) throw new Error('No filter on ' + field + ' after applying it');
   const out = (v) => v && { value: v.value instanceof Date ? v.value.toISOString() : v.value, formatted: v.formattedValue };
+  const domain = await f.getDomainAsync(window.tableauEnums.FilterDomainType.Database);
   return { type: f.filterType, min: out(f.minValue), max: out(f.maxValue),
+           domain: { min: out(domain.min), max: out(domain.max) },
            browser_tz: Intl.DateTimeFormat().resolvedOptions().timeZone };
 }"""
 
@@ -143,33 +145,22 @@ def _bound_day(bound: dict[str, Any] | None) -> str | None:
 def _date_problems(results: list[dict[str, Any]], sent: dict[str, Any]) -> list[str]:
     """A set bound must match. An omitted bound must be the filter's own endpoint."""
     problems = []
-    asked = (sent['min'], sent['max'])
     for result in results:
-        got = (
-            _bound_day(result['applied']['min']),
-            _bound_day(result['applied']['max']),
-        )
-        for side, asked_day, got_day in (
-            ('min', asked[0], got[0]),
-            ('max', asked[1], got[1]),
-        ):
-            if asked_day is None and got_day is None:
+        applied = result['applied']
+        for side in ('min', 'max'):
+            got = _bound_day(applied[side])
+            want = sent[side] or _bound_day(applied['domain'][side])
+            if got is None or got != want:
+                what = 'asked for' if sent[side] else 'filter endpoint'
                 problems.append(
-                    f'{result["timezone"]}: open {side} was null, not the filter endpoint'
+                    f'{result["timezone"]}: applied {side} {got}, {what} {want}'
                 )
-            elif asked_day is not None and got_day != asked_day:
-                problems.append(
-                    f'{result["timezone"]}: applied {side} {got_day}, asked for {asked_day}'
-                )
-    for side, asked_day, key in (('min', asked[0], 'min'), ('max', asked[1], 'max')):
-        if asked_day is not None:
-            continue
-        ends: set[str] = set()
-        for result in results:
-            day = _bound_day(result['applied'][key])
-            ends.add('null' if day is None else day)
-        if len(ends) > 1:
-            problems.append(f'open {side} differs between timezones: {sorted(ends)}')
+    for side in ('min', 'max'):
+        ends = {_bound_day(result['applied'][side]) for result in results}
+        if not sent[side] and len(ends) > 1:
+            problems.append(
+                f'open {side} differs between timezones: {sorted(ends, key=str)}'
+            )
     if len({result['csv_sha256'] for result in results}) > 1:
         problems.append('exported CSVs differ between timezones')
     return problems

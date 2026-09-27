@@ -178,6 +178,12 @@ def test_parse_filter_spec_rejects_a_bare_word() -> None:
         parse_filter_spec('Region')
 
 
+@pytest.mark.parametrize('spec', ['Order Date=..', 'Order Date= .. @Totals'])
+def test_parse_filter_spec_rejects_a_range_with_both_sides_empty(spec: str) -> None:
+    with pytest.raises(JobError, match=r'Field=min\.\.max'):
+        parse_filter_spec(spec)
+
+
 def test_view_from_flag_accepts_a_url_or_a_path() -> None:
     url = 'https://online.tableau.com/#/site/demo/views/Sales/Overview?:iid=1'
 
@@ -479,10 +485,7 @@ def test_filters_for_run_replaces_the_same_field_and_sheet(
         ValuesFilter('Ship Mode', ['First Class'], 'Detail'),
         RangeFilter('Order Date', 'Detail', None, '2026-08-01'),
     ]
-    assert "filter 'Order Date' names no sheet" in note
-    assert "'Totals'" in note
-    assert 'Ship Mode' not in note
-    assert 'Detail' not in note
+    assert not note
     assert job.filters == [
         RangeFilter('Order Date', 'Totals', '2026-09-01', '2026-09-25'),
         ValuesFilter('Region', ['West']),
@@ -513,5 +516,40 @@ def test_filters_for_run_matches_a_blank_sheet_on_the_first_sheet(
     assert added.filters == [
         RangeFilter('Order Date', '', '2020-01-01', '2020-02-01'),
         RangeFilter('Order Date', 'B', '2024-01-01', None),
+    ]
+    assert not capsys.readouterr().out
+
+
+def test_filters_for_run_without_a_sheet_replaces_the_field_on_every_sheet(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    job = Job(
+        'daily',
+        'W/V',
+        ['Totals', 'Detail', 'Map'],
+        'demo',
+        [
+            RangeFilter('Order Date', 'Detail', '2026-06-01', '2026-06-30'),
+            ValuesFilter('Region', ['West'], 'Detail'),
+            RangeFilter('Order Date', 'Map', '2026-06-01', '2026-06-30'),
+        ],
+    )
+
+    everywhere = crosstab.filters_for_run(
+        job, [parse_filter_spec('Order Date=2026-09-01..')]
+    )
+    only_map = crosstab.filters_for_run(
+        job, [parse_filter_spec('Order Date=..2026-09-25 @Map')]
+    )
+
+    assert everywhere.filters == [
+        RangeFilter('Order Date', 'Detail', '2026-09-01', None),
+        ValuesFilter('Region', ['West'], 'Detail'),
+        RangeFilter('Order Date', 'Map', '2026-09-01', None),
+    ]
+    assert only_map.filters == [
+        RangeFilter('Order Date', 'Detail', '2026-06-01', '2026-06-30'),
+        ValuesFilter('Region', ['West'], 'Detail'),
+        RangeFilter('Order Date', 'Map', None, '2026-09-25'),
     ]
     assert not capsys.readouterr().out
