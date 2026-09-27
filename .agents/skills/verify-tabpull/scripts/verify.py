@@ -16,17 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'src'))
 
 from playwright.sync_api import Browser, BrowserContext, sync_playwright
 
-from tabpull.crosstab import (
-    APPLY_JS,
-    INSPECT_JS,
-    Job,
-    JobError,
-    RangeFilter,
-    export_embed,
-    filter_payload,
-    load_jobs,
-    open_view,
-)
+from tabpull.embed import APPLY_JS, INSPECT_JS, export_embed, filter_payload, open_view
+from tabpull.jobs import Job, JobError, RangeFilter, load_jobs
 from tabpull.tableau import (
     MissingSettingsError,
     Settings,

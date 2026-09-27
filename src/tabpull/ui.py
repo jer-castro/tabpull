@@ -3,7 +3,9 @@
 Piped or captured output keeps the plain TOON and lines that agents and scripts read.
 """
 
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import questionary
@@ -35,3 +37,9 @@ def interactive() -> bool:
 def ask(question: questionary.Question) -> Any:  # noqa: ANN401 - questionary answers are untyped
     """Run a picker; Ctrl-C raises KeyboardInterrupt for the CLI's exit 130."""
     return question.unsafe_ask()
+
+
+def home_path(path: Path | str) -> str:
+    text = os.path.normpath(Path(path).absolute())
+    home = str(Path.home())
+    return '~' + text[len(home) :] if text.startswith(home + os.sep) else text

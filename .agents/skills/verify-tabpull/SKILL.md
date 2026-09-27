@@ -1,6 +1,6 @@
 ---
 name: verify-tabpull
-description: Drive the tabpull CLI (tabpull add/run/login/setup) against the real Tableau site and prove exports, filters, date ranges and view search with captured evidence. Use before shipping any change to src/tabpull/crosstab.py or src/tabpull/tableau.py, or when a filter, date or search behavior is in question.
+description: Drive the tabpull CLI (tabpull add/run/login/setup) against the real Tableau site and prove exports, filters, date ranges and view search with captured evidence. Use before shipping any change to src/tabpull/embed.py, filters.py, add.py, run.py or tableau.py, or when a filter, date or search behavior is in question.
 ---
 
 # Verify tabpull
