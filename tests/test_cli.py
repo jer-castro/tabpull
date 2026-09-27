@@ -3,6 +3,7 @@ import io
 import re
 import runpy
 import shlex
+import signal
 import subprocess  # noqa: S404
 import sys
 import threading
@@ -1465,6 +1466,24 @@ def test_cancel_before_publish_leaves_no_csv(
 
     assert not (out / 'daily' / 'Totals.csv').exists()
     assert list(out.rglob('*.partial')) == []
+
+
+def test_cancel_kills_the_browser_where_signal_has_no_sigkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _sleeper()
+    monkeypatch.delattr(signal, 'SIGKILL')
+    try:
+        with (
+            ui.capture(lambda _line: None, lambda: True),
+            tableau.close_on_stop(),
+        ):
+            tableau.launch_browser(cast('Any', _Launcher(proc.pid)), headless=True)
+            assert proc.wait(timeout=3) == -signal.SIGTERM
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
 
 
 def test_cancel_kills_a_real_browser_mid_call() -> None:

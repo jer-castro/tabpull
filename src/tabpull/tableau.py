@@ -329,10 +329,12 @@ def close_on_stop() -> Iterator[None]:
         while not done.wait(_CANCEL_POLL_S):
             if not ctx.run(ui.stopped):
                 continue
+            # Windows has no SIGKILL; os.kill with SIGTERM there is TerminateProcess.
+            hard_kill = getattr(signal, 'SIGKILL', signal.SIGTERM)
             with _browser_pids_lock:
                 for pid in pids:
-                    with suppress(ProcessLookupError):
-                        os.kill(pid, signal.SIGKILL)
+                    with suppress(OSError):
+                        os.kill(pid, hard_kill)
                 pids.clear()
 
     watcher = threading.Thread(target=watch, name='tabpull-cancel', daemon=True)
