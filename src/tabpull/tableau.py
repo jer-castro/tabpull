@@ -313,9 +313,10 @@ def close_on_stop() -> Iterator[None]:
     """Kill the browsers launch_browser starts in this block once ui.stopped() is true.
 
     The sync API is not thread-safe, so the watcher thread never touches a
-    Playwright object. It only SIGKILLs browser pids the worker thread read from
-    Chrome over CDP. The Playwright driver stays up, so the call blocked on the
-    worker raises TargetClosedError and later close() calls return at once.
+    Playwright object. It only hard-kills browser pids the worker thread read
+    from Chrome over CDP. The Playwright driver stays up, so the call blocked
+    on the worker raises TargetClosedError and later close() calls return at
+    once.
     """
     if _browser_pids.get() is not None or not ui.captures_stop():
         yield
