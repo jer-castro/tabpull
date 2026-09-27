@@ -1,5 +1,3 @@
-"""Entry point: answer a bare version probe before the heavy imports load."""
-
 import sys
 from importlib.metadata import version as installed_version
 

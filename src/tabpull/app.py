@@ -164,8 +164,6 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
 
 
 class _Parser(argparse.ArgumentParser):
-    """Usage errors on stdout with this command's usage, so the fix is one step."""
-
     def error(self, message: str) -> NoReturn:
         print(f'error: {message}')
         print(self.format_usage().rstrip())
@@ -300,7 +298,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def cli() -> None:
-    """Print a failure as `error: ...` on stdout, where agents read the rest."""
     try:
         code = main()
     except KeyboardInterrupt:

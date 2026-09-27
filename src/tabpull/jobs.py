@@ -1,5 +1,3 @@
-"""Jobs: the saved job model and the jobs.toml file that holds it."""
-
 import json
 import re
 import tomllib
@@ -24,8 +22,6 @@ class RangeFilter:
 
 @dataclass(frozen=True)
 class Job:
-    """Crosstab of dashboard sheets through the Embedding API, like Download > Crosstab."""
-
     name: str
     view: str
     sheets: list[str]

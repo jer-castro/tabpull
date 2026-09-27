@@ -1,10 +1,3 @@
-"""Tableau settings, PAT sign-in for the REST API, and the SSO browser session.
-
-The config directory holds site tokens, SSO cookies, and the jobs file. It is the XDG
-config directory when `XDG_CONFIG_HOME` is set, and the usual OS folder otherwise.
-Exports go to the working directory, so they are not managed here.
-"""
-
 import importlib.metadata
 import os
 import re
@@ -76,7 +69,6 @@ def _rooted(env_var: str, unix_default: Path, windows: Path, mac: Path) -> Path:
 
 
 def config_dir() -> Path:
-    """Site tokens, SSO cookies, and the jobs file."""
     return _rooted(
         'XDG_CONFIG_HOME',
         Path.home() / '.config',
@@ -86,10 +78,6 @@ def config_dir() -> Path:
 
 
 def data_dir() -> Path:
-    """XDG data directory: `XDG_DATA_HOME`, else ~/.local/share on macOS and Linux, else LocalAppData.
-
-    New exports are not stored here. Old auth cookies are at `_legacy_data_dir`.
-    """
     share = Path.home() / '.local' / 'share'
     return _rooted(
         'XDG_DATA_HOME',
@@ -100,11 +88,6 @@ def data_dir() -> Path:
 
 
 def _legacy_data_dir() -> Path:
-    """Where auth cookies lived before they moved next to the jobs file.
-
-    macOS used Application Support, which is already the config directory. Other
-    systems used the data directory. `XDG_DATA_HOME` was honored on every OS.
-    """
     if os.environ.get('XDG_DATA_HOME'):
         return data_dir()
     if sys.platform == 'darwin':
@@ -113,7 +96,6 @@ def _legacy_data_dir() -> Path:
 
 
 def _move_dir(source: Path, dest: Path) -> None:
-    """Move a directory once. Leave it in place when the destination already exists."""
     if source == dest or not source.is_dir() or dest.exists():
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -121,10 +103,6 @@ def _move_dir(source: Path, dest: Path) -> None:
 
 
 def _migrate_layout() -> None:
-    """Move auth cookies into the config directory.
-
-    Anything else in the old folder, including old exports, stays where it is.
-    """
     _move_dir(_legacy_data_dir() / 'auth', config_dir() / 'auth')
 
 
@@ -168,7 +146,6 @@ class Settings:
         return home_url(self.server, self.site)
 
     def view_url(self, view: str) -> str:
-        """Embeddable URL for a `Workbook/View` path."""
         site = f'/t/{self.site}' if self.site else ''
         return f'{self.server}{site}/views/{view}'
 
@@ -181,7 +158,6 @@ class TableauUrl:
 
 
 def parse_tableau_url(url: str) -> TableauUrl:
-    """Split a browser URL (Cloud `#/site/..` or Server `/t/..` style) into server, site and view."""
     parts = urlsplit(url.strip())
     if not parts.scheme or not parts.netloc:
         msg = f'Not a URL: {url!r}'
@@ -208,7 +184,6 @@ def read_env_file(path: Path) -> dict[str, str]:
 
 
 def upsert_env(path: Path, key: str, value: str) -> None:
-    """Upsert KEY=VALUE, keeping every other line."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = path.read_text(encoding='utf-8').splitlines() if path.exists() else []
     kept = [line for line in lines if line.partition('=')[0].strip() != key]
@@ -217,7 +192,6 @@ def upsert_env(path: Path, key: str, value: str) -> None:
 
 
 def save_site(name: str, values: dict[str, str]) -> Path:
-    """Write a site token file. Setup writes the same file one key at a time."""
     path = site_env_path(name)
     for key in SETTING_KEYS:
         if key in values:
@@ -226,11 +200,6 @@ def save_site(name: str, values: dict[str, str]) -> Path:
 
 
 def load_site(name: str) -> Settings:
-    """Load one site's token file.
-
-    The working directory and the process environment are not consulted, so each site
-    keeps the token that setup saved for it.
-    """
     path = site_env_path(name)
     if not path.is_file():
         known = ', '.join(list_sites()) or '(none)'
@@ -260,10 +229,7 @@ def load_site(name: str) -> Settings:
 
 @contextmanager
 def rest_session(settings: Settings) -> Iterator[tsc.Server]:
-    """Signed-in REST API client; signs out on exit.
-
-    Signing in with a PAT ends any other session using the same PAT, so don't share one token across parallel runs.
-    """
+    """Signing in with a PAT ends any other session using the same PAT, so don't share one token across parallel runs."""
     server = tsc.Server(settings.server, use_server_version=True)
     auth = tsc.PersonalAccessTokenAuth(
         settings.pat_name, settings.pat_secret, site_id=settings.site
@@ -273,11 +239,7 @@ def rest_session(settings: Settings) -> Iterator[tsc.Server]:
 
 
 def _chromium_install() -> str:
-    """Install Chromium into the cache this Playwright version searches.
-
-    `uvx playwright==<version>` uses the same browser revision and the default
-    `ms-playwright` cache as the Playwright package installed with tabpull.
-    """
+    """`uvx playwright==<version>` uses the same browser revision and the default `ms-playwright` cache as the Playwright package installed with tabpull."""
     version = importlib.metadata.version('playwright')
     return f'uvx playwright=={version} install chromium'
 
@@ -293,10 +255,7 @@ def launch_browser(pw: Playwright, *, headless: bool) -> Browser:
 
 
 def session_valid(context: BrowserContext, settings: Settings) -> bool:
-    """Ask Tableau whether the browser cookies still hold a live session.
-
-    Uses getSessionInfo, the internal endpoint Tableau's own web client calls on every page load.
-    """
+    """Uses getSessionInfo, the internal endpoint Tableau's own web client calls on every page load."""
     xsrf = next(
         (
             c['value']
@@ -317,7 +276,6 @@ def session_valid(context: BrowserContext, settings: Settings) -> bool:
 
 
 def sso_login(pw: Playwright, settings: Settings) -> None:
-    """Open a real browser window, wait for the human to finish SSO, then save the cookies."""
     browser = launch_browser(pw, headless=False)
     context = browser.new_context(
         storage_state=settings.auth_path if settings.auth_path.exists() else None,
@@ -347,7 +305,6 @@ def sso_login(pw: Playwright, settings: Settings) -> None:
 
 
 def browser_session(pw: Playwright, settings: Settings) -> BrowserContext:
-    """Headless context with a live Tableau session, prompting for SSO when the saved one is missing or expired."""
     browser = launch_browser(pw, headless=True)
     if settings.auth_path.exists():
         context = browser.new_context(storage_state=settings.auth_path)

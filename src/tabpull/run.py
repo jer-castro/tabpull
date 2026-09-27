@@ -1,5 +1,3 @@
-"""Run jobs: one browser session per site, carrying on past failures, with progress output."""
-
 import csv
 from collections.abc import Sequence
 from contextlib import AbstractContextManager, nullcontext
@@ -134,7 +132,6 @@ type Report = _PlainRun | _TTYRun
 
 
 def open_report(jobs: Sequence[Job], out_dir: Path) -> Report:
-    """Progress bars and a summary panel at a TTY, plain lines otherwise."""
     return (_TTYRun if ui.rich_output() else _PlainRun)(jobs, out_dir)
 
 
@@ -184,7 +181,6 @@ def _export_group(
 
 
 def run_jobs(jobs: Sequence[Job], out_dir: Path, report: Report) -> list[str]:
-    """Export every job, carrying on past failures. Returns the failed job names."""
     groups: list[tuple[str, list[Job]]] = []
     for job in jobs:
         if groups and groups[-1][0] == job.site:
