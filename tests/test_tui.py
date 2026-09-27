@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from textual.widgets import DataTable, Input, RadioButton, Static, TextArea
 
+from tabpull import tableau
 from tabpull.jobs import Job, RangeFilter, ValuesFilter, load_jobs, save_jobs
 from tabpull.tui.app import HomeScreen, JobScreen, TabpullApp
 from tabpull.tui.forms import ConfirmScreen, FilterForm
@@ -101,6 +102,43 @@ def test_home_lists_jobs_and_edits_a_filter_param_and_name(jobs_file: Path) -> N
         assert isinstance(tui.screen, HomeScreen)
         table = tui.screen.query_one('#jobs', DataTable)
         assert table.get_row_at(0)[1] == 'daily-west'
+
+    _drive(jobs_file, steps)
+
+
+def test_job_screen_changes_view_and_site_with_cli_validation(
+    jobs_file: Path,
+) -> None:
+    tableau.save_site(
+        'ops',
+        {
+            'TABLEAU_SERVER_URL': 'https://tableau.example',
+            'TABLEAU_SITE': 'ops',
+            'TABLEAU_PAT_NAME': 'tabpull',
+            'TABLEAU_PAT_SECRET': 'pat-value',
+        },
+    )
+
+    async def steps(tui: TabpullApp, pilot) -> None:  # noqa: ANN001
+        await pilot.press('enter', 'v')
+        field = tui.screen.query_one('#value', Input)
+        field.value = 'NoSlash'
+        await pilot.press('ctrl+s')
+        assert 'Workbook/View' in str(tui.screen.query_one('#error', Static).render())
+        field.value = 'https://tableau.example/#/site/ops/views/Ops/Summary?:iid=1'
+        await pilot.press('ctrl+s')
+        assert load_jobs(jobs_file)[0].view == 'Ops/Summary'
+
+        await pilot.press('S')
+        field = tui.screen.query_one('#value', Input)
+        field.value = 'nowhere'
+        await pilot.press('ctrl+s')
+        assert 'Configured sites: ops' in str(
+            tui.screen.query_one('#error', Static).render()
+        )
+        field.value = 'ops'
+        await pilot.press('ctrl+s')
+        assert load_jobs(jobs_file)[0].site == 'ops'
 
     _drive(jobs_file, steps)
 

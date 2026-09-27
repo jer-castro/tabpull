@@ -15,6 +15,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Label, Static
 
 from tabpull import ui
+from tabpull.add import view_from_flag
 from tabpull.filters import format_filter
 from tabpull.home import site_rows, sso_badge
 from tabpull.jobs import (
@@ -26,6 +27,7 @@ from tabpull.jobs import (
     load_jobs,
     update_job,
 )
+from tabpull.tableau import list_sites
 from tabpull.tui.forms import (
     FORM_CSS,
     ConfirmScreen,
@@ -244,6 +246,8 @@ class JobScreen(Screen[None]):
         Binding('d', 'delete', 'delete'),
         Binding('s', 'sheets', 'sheets'),
         Binding('N', 'rename', 'rename'),
+        Binding('v', 'view', 'view'),
+        Binding('S', 'site', 'site'),
         Binding('r', 'run', 'run'),
     ]
 
@@ -272,8 +276,9 @@ class JobScreen(Screen[None]):
         job = self.job
         sheets = '\n'.join(f'  {escape(sheet)}' for sheet in job.sheets)
         self.query_one('#summary', Static).update(
-            f'[bold]{escape(job.name)}[/]  on site {escape(job.site)}\n'
-            f'view    {escape(job.view)}\n'
+            f'[bold]{escape(job.name)}[/]  (N rename)\n'
+            f'site    {escape(job.site)}  (S to change)\n'
+            f'view    {escape(job.view)}  (v to change)\n'
             f'sheets  (s to edit)\n{sheets}'
         )
         _refill(
@@ -399,6 +404,29 @@ class JobScreen(Screen[None]):
                 'Job name (exports go to <out>/<name>/)',
                 self.job.name,
                 lambda name: self.commit(replace(self.job, name=name)),
+            )
+        )
+
+    def action_view(self) -> None:
+        self.app.push_screen(
+            TextForm(
+                'Change view',
+                'Workbook/View, or a view URL (sheets and filters stay as they are)',
+                self.job.view,
+                lambda text: self.commit(replace(self.job, view=view_from_flag(text))),
+            )
+        )
+
+    def action_site(self) -> None:
+        def save(name: str) -> None:
+            if name not in (sites := list_sites()):
+                msg = f'No site named {name!r}. Configured sites: {", ".join(sites) or "(none)"}'
+                raise JobError(msg)
+            self.commit(replace(self.job, site=name))
+
+        self.app.push_screen(
+            TextForm(
+                'Change site', 'Local site name from tabpull setup', self.job.site, save
             )
         )
 
