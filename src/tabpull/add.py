@@ -17,7 +17,6 @@ from rich.table import Table
 from tabpull import ui
 from tabpull.embed import INSPECT_JS, SheetInfo, ViewInfo, open_view
 from tabpull.filters import (
-    accept_range_bound,
     normalize_range_bound,
     parse_filter_spec,
     parse_param_spec,
@@ -75,13 +74,6 @@ def _validate_range_answer(value: str) -> bool | str:
     return True
 
 
-def _range_ends(current: str) -> tuple[str, str]:
-    low, sep, high = current.partition(' .. ')
-    if not sep:
-        return '', ''
-    return low, high
-
-
 def _prompt_text(
     message: str,
     *,
@@ -95,7 +87,9 @@ def _prompt_text(
 
 def _prompt_bound(message: str, default: str) -> str | None:
     answer = _prompt_text(message, default=default, validate=_validate_range_answer)
-    return accept_range_bound(answer.strip() or None)
+    bound = answer.strip() or None
+    normalize_range_bound(bound)
+    return bound
 
 
 def _find_view(settings: Settings) -> tsc.ViewItem:
@@ -196,7 +190,9 @@ def _prompt_filters(listed: list[_ListedFilter]) -> list[ValuesFilter | RangeFil
             return filters
         field_name, sheet = item['field'], item['sheet']
         if item['type'] == 'range':
-            low, high = _range_ends(item['current'])
+            low, sep, high = item['current'].partition(' .. ')
+            if not sep:
+                low = high = ''
             while True:
                 start = _prompt_bound(f'{field_name} from', low)
                 end = _prompt_bound(f'{field_name} to', high)
@@ -226,17 +222,6 @@ def _prompt_params(params: list[dict[str, str]]) -> dict[str, str]:
         chosen[param['name']] = _prompt_text(param['name'], default=param['current'])
 
 
-def _prompt_sheets(names: list[str]) -> list[str]:
-    return ui.ask(
-        questionary.checkbox(
-            'Sheets to crosstab',
-            choices=names,
-            validate=lambda picked: bool(picked) or 'Pick at least one sheet',
-            style=ui.STYLE,
-        )
-    )
-
-
 def _build_embed_job(
     context: BrowserContext, settings: Settings, name: str, view: str
 ) -> Job:
@@ -244,7 +229,14 @@ def _build_embed_job(
         page = open_view(context, settings, view)
         info: ViewInfo = page.evaluate(INSPECT_JS)
         page.close()
-    chosen = _prompt_sheets([sheet['name'] for sheet in info['sheets']])
+    chosen: list[str] = ui.ask(
+        questionary.checkbox(
+            'Sheets to crosstab',
+            choices=[sheet['name'] for sheet in info['sheets']],
+            validate=lambda picked: bool(picked) or 'Pick at least one sheet',
+            style=ui.STYLE,
+        )
+    )
     listed = _print_fields(info['sheets'], chosen, info['params'])
     job = Job(
         name,

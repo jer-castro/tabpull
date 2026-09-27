@@ -40,10 +40,6 @@ class _Run:
         self.skipped: list[str] = []
         self.stages = itertools.count(1)
 
-    def bind(self, name: str) -> None:
-        self.env_path = site_env_path(name)
-        self.auth_path = site_auth_path(name)
-
 
 _run = _Run()
 TOTAL_STAGES = 3
@@ -170,7 +166,8 @@ def _prompt_site_name() -> str:
 def _site_stage(preset: str | None) -> tuple[str, str, str]:
     stage('Tableau site')
     name = preset or _prompt_site_name()
-    _run.bind(name)
+    _run.env_path = site_env_path(name)
+    _run.auth_path = site_auth_path(name)
     env = read_env_file(_run.env_path)
     server = env.get('TABLEAU_SERVER_URL', '')
     if server:

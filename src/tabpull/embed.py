@@ -154,10 +154,6 @@ def normalize_csv(raw: bytes) -> str:
     return out.getvalue()
 
 
-def output_path(out_dir: Path, job: Job, sheet: str) -> Path:
-    return out_dir / slug(job.name) / f'{slug(sheet)}.csv'
-
-
 def _refuse_story(page: Page) -> None:
     try:
         page.evaluate(STORY_JS)
@@ -221,7 +217,7 @@ def export_embed(
                 on_sheet(len(written), sheet)
             with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as download:
                 page.evaluate(EXPORT_JS, sheet)
-            path = output_path(out_dir, job, sheet)
+            path = out_dir / slug(job.name) / f'{slug(sheet)}.csv'
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 normalize_csv(Path(download.value.path()).read_bytes()),
