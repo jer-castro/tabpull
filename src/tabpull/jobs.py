@@ -104,16 +104,29 @@ def save_jobs(path: Path, jobs: Sequence[Job]) -> None:
     scratch.replace(path)
 
 
-def _unknown(names: Sequence[str], jobs: Sequence[Job]) -> JobError:
-    saved = ', '.join(job.name for job in jobs) or 'none'
-    return JobError(f'Unknown jobs: {", ".join(names)}. Saved jobs: {saved}')
+def saved_jobs_or_exit(path: Path) -> list[Job]:
+    try:
+        jobs = load_jobs(path)
+    except (JobError, tomllib.TOMLDecodeError, OSError) as e:
+        msg = f'{path}: {e}'
+        raise SystemExit(msg) from e
+    if not jobs:
+        msg = f'No jobs in {path}. Run: tabpull add'
+        raise SystemExit(msg)
+    return jobs
+
+
+def check_known(names: Sequence[str], jobs: Sequence[Job]) -> None:
+    if unknown := sorted(set(names) - {job.name for job in jobs}):
+        saved = ', '.join(job.name for job in jobs) or 'none'
+        msg = f'Unknown jobs: {", ".join(unknown)}. Saved jobs: {saved}'
+        raise JobError(msg)
 
 
 def update_job(path: Path, old_name: str, job: Job) -> list[Job]:
     jobs = load_jobs(path)
-    index = next((i for i, saved in enumerate(jobs) if saved.name == old_name), None)
-    if index is None:
-        raise _unknown([old_name], jobs)
+    check_known([old_name], jobs)
+    index = next(i for i, saved in enumerate(jobs) if saved.name == old_name)
     if job.name != old_name and any(saved.name == job.name for saved in jobs):
         msg = f'A job named {job.name!r} already exists in {path}.'
         raise JobError(msg)
@@ -124,8 +137,7 @@ def update_job(path: Path, old_name: str, job: Job) -> list[Job]:
 
 def delete_jobs(path: Path, names: Sequence[str]) -> list[Job]:
     jobs = load_jobs(path)
-    if unknown := sorted(set(names) - {job.name for job in jobs}):
-        raise _unknown(unknown, jobs)
+    check_known(names, jobs)
     kept = [job for job in jobs if job.name not in names]
     save_jobs(path, kept)
     return kept

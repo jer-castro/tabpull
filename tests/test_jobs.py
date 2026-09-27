@@ -10,9 +10,11 @@ from tabpull.jobs import (
     JobError,
     RangeFilter,
     ValuesFilter,
+    check_known,
     delete_jobs,
     load_jobs,
     save_jobs,
+    saved_jobs_or_exit,
     update_job,
 )
 
@@ -99,6 +101,29 @@ def test_delete_jobs_keeps_the_rest_and_names_unknown_jobs(tmp_path: Path) -> No
 
     delete_jobs(path, ['b'])
     assert load_jobs(path) == []
+
+
+def test_saved_jobs_or_exit_names_the_file_for_unreadable_and_empty(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'jobs.toml'
+    with pytest.raises(SystemExit, match=r'No jobs in .*jobs\.toml\. Run: tabpull add'):
+        saved_jobs_or_exit(path)
+    path.write_text('job = 1\n', encoding='utf-8')
+    with pytest.raises(SystemExit, match=r'jobs\.toml: `job` must be an array'):
+        saved_jobs_or_exit(path)
+    _write(path, _job('a'))
+    assert [job.name for job in saved_jobs_or_exit(path)] == ['a']
+
+
+def test_check_known_lists_unknown_names_sorted_with_the_saved_ones() -> None:
+    jobs = [_job('b'), _job('a')]
+    check_known(['a'], jobs)
+    check_known([], jobs)
+    with pytest.raises(JobError, match=r'^Unknown jobs: x, y\. Saved jobs: b, a$'):
+        check_known(['y', 'a', 'x'], jobs)
+    with pytest.raises(JobError, match=r'Saved jobs: none$'):
+        check_known(['x'], [])
 
 
 def test_bare_tabpull_opens_the_tui_only_at_a_terminal(

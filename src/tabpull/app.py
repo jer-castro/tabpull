@@ -29,7 +29,7 @@ from tabpull.add import add_job, add_job_from_flags
 from tabpull.cli import VERSION_FLAGS, version
 from tabpull.filters import filters_for_run, parse_filter_spec
 from tabpull.home import file_flags, show_home
-from tabpull.jobs import JobError, load_jobs
+from tabpull.jobs import JobError, check_known, saved_jobs_or_exit
 from tabpull.remove import remove_jobs
 from tabpull.run import open_report, run_jobs
 from tabpull.tableau import (
@@ -127,22 +127,10 @@ def _cmd_add(args: argparse.Namespace, jobs_file: Path) -> None:
 
 
 def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
-    try:
-        jobs = load_jobs(jobs_file)
-    except (JobError, tomllib.TOMLDecodeError, OSError) as e:
-        msg = f'{jobs_file}: {e}'
-        raise SystemExit(msg) from e
-    if not jobs:
-        msg = f'No jobs in {jobs_file}. Run: tabpull add'
-        raise SystemExit(msg)
-    if unknown := set(args.names) - {job.name for job in jobs}:
-        msg = (
-            f'Unknown jobs: {", ".join(sorted(unknown))}. '
-            f'Saved jobs: {", ".join(job.name for job in jobs)}'
-        )
-        raise SystemExit(msg)
+    jobs = saved_jobs_or_exit(jobs_file)
     selected = [job for job in jobs if not args.names or job.name in args.names]
     try:
+        check_known(args.names, jobs)
         overrides = [parse_filter_spec(spec) for spec in args.filter_specs or []]
         selected = [filters_for_run(job, overrides) for job in selected]
     except JobError as e:
