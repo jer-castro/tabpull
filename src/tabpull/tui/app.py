@@ -1,12 +1,12 @@
-import shlex
-import subprocess  # noqa: S404
-import sys
 import tomllib
-from contextlib import suppress
-from dataclasses import replace
+from collections.abc import Sequence
+from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar, override
 
+import tableauserverclient as tsc
+from playwright.sync_api import sync_playwright
 from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -15,25 +15,52 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Label, Static
 
 from tabpull import ui
-from tabpull.add import view_from_flag
-from tabpull.filters import format_filter
+from tabpull.add import (
+    MAX_SEARCH_RESULTS,
+    ListedFilter,
+    append_job,
+    listed_filters,
+    read_view,
+    search_views,
+    view_from_flag,
+    view_path,
+)
+from tabpull.embed import ViewInfo
+from tabpull.filters import format_filter, resolved_filters, split_values
 from tabpull.home import site_rows, sso_badge
 from tabpull.jobs import (
     Job,
     JobError,
     RangeFilter,
     ValuesFilter,
+    check_known,
     delete_jobs,
     load_jobs,
+    slug,
     update_job,
 )
-from tabpull.tableau import list_sites
+from tabpull.run import run_jobs as export_jobs
+from tabpull.tableau import (
+    MissingSettingsError,
+    Settings,
+    UnknownSiteError,
+    browser_session,
+    list_sites,
+    load_site,
+    parse_tableau_url,
+    sso_login,
+)
 from tabpull.tui.forms import (
     FORM_CSS,
+    ChecksForm,
+    ChoiceScreen,
     ConfirmScreen,
     FilterForm,
     ParamForm,
+    PickScreen,
+    SetupForm,
     SheetsForm,
+    TaskScreen,
     TextForm,
 )
 
@@ -190,7 +217,6 @@ class HomeScreen(Screen[None]):
     def action_run(self) -> None:
         if names := self._selected():
             self.app.run_jobs(names)
-            self.reload()
         else:
             self.notify('No jobs to run. Press a to add one.', severity='warning')
 
@@ -214,16 +240,13 @@ class HomeScreen(Screen[None]):
         )
 
     def action_add(self) -> None:
-        self.app.shell('add')
-        self.reload()
+        self.app.start_add()
 
     def action_setup(self) -> None:
-        self.app.shell('setup')
-        self.reload()
+        self.app.push_screen(SetupForm())
 
     def action_login(self) -> None:
-        self.app.shell('login')
-        self.reload()
+        self.app.start_login()
 
     def action_reload(self) -> None:
         self.reload()
@@ -452,34 +475,327 @@ class TabpullApp(App[None]):
         else:
             self.action_show_help_panel()
 
-    def shell(self, *argv: str) -> int:
-        """Playwright's sync API refuses to start inside Textual's asyncio loop."""
-        files = ['--jobs', str(self.jobs_file), '--out', str(self.out_dir)]
-        with self.suspend():
-            print(f'\n$ {shlex.join(["tabpull", *argv])}', flush=True)
-            try:
-                code = subprocess.run(  # noqa: S603
-                    [sys.executable, '-m', 'tabpull', *files, *argv], check=False
-                ).returncode
-            except KeyboardInterrupt:
-                code = 130
-            with suppress(EOFError, KeyboardInterrupt):
-                input('\nPress Enter to go back to tabpull. ')
-        return code
-
     def run_jobs(self, names: list[str]) -> None:
-        code = self.shell('run', '--', *names)
-        label = ', '.join(names)
-        if code == 0:
-            self.last_run = f'last run: {label} ok'
-            self.notify(f'Exported {label}')
-        else:
-            self.last_run = f'last run: {label} FAILED (exit {code})'
-            self.notify(
-                f'Run failed ({label}). The summary it printed names the failures.',
-                severity='error',
-                timeout=10,
+        def work() -> str:
+            if ui.stopped():
+                msg = 'Cancelled.'
+                raise SystemExit(msg)
+            jobs = load_jobs(self.jobs_file)
+            check_known(names, jobs)
+            wanted = set(names)
+            selected = [job for job in jobs if job.name in wanted]
+            ui.emit(f'Exporting {len(selected)} job(s) to {self.out_dir}/')
+            failed = export_jobs(selected, self.out_dir, _TuiReport())
+            if ui.stopped():
+                msg = 'Cancelled.'
+                raise SystemExit(msg)
+            if failed:
+                msg = f'{len(failed)} failed: {", ".join(failed)}'
+                raise SystemExit(msg)
+            return f'Exported {", ".join(job.name for job in selected)}'
+
+        self.push_screen(
+            TaskScreen(
+                'Export',
+                work,
+                lambda summary: self._finish_run(names, summary, failed=False),
+                lambda message: self._finish_run(names, message, failed=True),
+                on_cancel=lambda: self._finish_run(names, 'Cancelled.', failed=False),
             )
+        )
+
+    def _finish_run(self, names: list[str], message: str, *, failed: bool) -> None:
+        label = ', '.join(names)
+        if message == 'Cancelled.':
+            self.last_run = f'last run: {label} cancelled'
+            self.notify('Cancelled.', severity='warning')
+        elif failed:
+            self.last_run = f'last run: {label} FAILED ({message})'
+            self.notify(message, severity='error', timeout=10)
+        else:
+            self.last_run = f'last run: {label} ok'
+            self.notify(message)
+        if isinstance(self.screen, HomeScreen):
+            self.screen.reload()
+
+    def start_login(self) -> None:
+        names = list_sites()
+        if not names:
+            self.notify(
+                'No Tableau site configured. Press s to set up a site.',
+                severity='warning',
+            )
+            return
+        if len(names) == 1:
+            self._login(names[0])
+            return
+        self.push_screen(
+            ChoiceScreen('Site', [(name, name) for name in names], self._login)
+        )
+
+    def _login(self, name: str) -> None:
+        try:
+            settings = load_site(name)
+        except (UnknownSiteError, MissingSettingsError, ValueError) as e:
+            self.notify(str(e), severity='error')
+            return
+
+        def work() -> str:
+            with sync_playwright() as playwright:
+                sso_login(playwright, settings)
+            return name
+
+        self.push_screen(
+            TaskScreen(
+                f'Signing in to {name}…',
+                work,
+                lambda _name: self._login_done(name),
+                lambda message: self.notify(message, severity='error', timeout=10),
+            )
+        )
+
+    def _login_done(self, name: str) -> None:
+        self.notify(f'Signed in to {name}')
+        if isinstance(self.screen, HomeScreen):
+            self.screen.reload()
+
+    def start_add(self) -> None:
+        names = list_sites()
+        if not names:
+            self.notify('No Tableau site configured. Starting setup.')
+            self.push_screen(SetupForm(self._add_site))
+            return
+        if len(names) == 1:
+            self._add_site(names[0])
+            return
+        self.push_screen(
+            ChoiceScreen('Site', [(name, name) for name in names], self._add_site)
+        )
+
+    def _add_site(self, name: str) -> None:
+        try:
+            settings = load_site(name)
+        except (UnknownSiteError, MissingSettingsError, ValueError) as e:
+            self.notify(str(e), severity='error')
+            return
+        self.push_screen(
+            TextForm(
+                'Add job',
+                'View URL or part of a workbook/view name',
+                '',
+                lambda query: self._queue_search(settings, query),
+            )
+        )
+
+    def _queue_search(self, settings: Settings, query: str) -> None:
+        self.call_later(self._search, settings, query)
+
+    def _search(self, settings: Settings, query: str) -> None:
+        def failed(message: str) -> None:
+            self.notify(message, severity='error', timeout=10)
+
+        self.push_screen(
+            TaskScreen(
+                'Searching views…',
+                lambda: search_views(settings, query),
+                lambda matches: self._views(settings, query, matches),
+                failed,
+            )
+        )
+
+    def _views(
+        self, settings: Settings, query: str, matches: list[tsc.ViewItem]
+    ) -> None:
+        if not matches:
+            self.notify(
+                f'No views you can access match {query!r}.', severity='error', timeout=8
+            )
+            return
+        target = parse_tableau_url(query).view if query.startswith('http') else None
+        if target and len(matches) == 1:
+            self._name_job(settings, matches[0])
+            return
+        shown = matches[:MAX_SEARCH_RESULTS]
+        if len(matches) > MAX_SEARCH_RESULTS:
+            self.notify(
+                f'Showing the best {MAX_SEARCH_RESULTS} of {len(matches)} matches; '
+                'type more of the name to narrow it.'
+            )
+        disabled: set[str] = set()
+        options: list[tuple[str, str]] = []
+        for index, item in enumerate(shown):
+            kind = item.sheet_type or 'view'
+            options.append((f'{item.name}  {item.content_url}  {kind}', str(index)))
+            if kind.lower() == 'story':
+                disabled.add(str(index))
+        self.push_screen(
+            ChoiceScreen(
+                'View',
+                options,
+                lambda index: self._name_job(settings, shown[int(index)]),
+                disabled=disabled,
+            )
+        )
+
+    def _name_job(self, settings: Settings, item: tsc.ViewItem) -> None:
+        view = view_path(item)
+        try:
+            existing = {job.name for job in load_jobs(self.jobs_file)}
+        except (JobError, tomllib.TOMLDecodeError, OSError) as e:
+            self.notify(str(e), severity='error')
+            return
+        default = slug(item.name or view)
+
+        def save(name: str) -> None:
+            if name in existing:
+                msg = f'A job named {name!r} already exists in {self.jobs_file}.'
+                raise JobError(msg)
+            self.call_later(self._inspect, settings, name, view)
+
+        self.push_screen(
+            TextForm(
+                'Job name',
+                'Job name (exports go to <out>/<name>/)',
+                default,
+                save,
+            )
+        )
+
+    def _inspect(self, settings: Settings, name: str, view: str) -> None:
+        def work() -> ViewInfo:
+            with sync_playwright() as playwright:
+                return read_view(browser_session(playwright, settings), settings, view)
+
+        def opened(info: ViewInfo) -> None:
+            draft = _Add(settings, view, name, info)
+            names = [sheet['name'] for sheet in info['sheets']]
+
+            def chosen(sheets: list[str]) -> None:
+                draft.sheets = sheets
+                draft.listed = listed_filters(info['sheets'], sheets)
+                self.call_later(self._pick_filters, draft)
+
+            self.push_screen(ChecksForm('Sheets to crosstab', names, chosen))
+
+        self.push_screen(
+            TaskScreen(
+                f'Opening {view}…',
+                work,
+                opened,
+                lambda message: self.notify(message, severity='error', timeout=10),
+            )
+        )
+
+    def _pick_filters(self, draft: '_Add') -> None:
+        if not draft.listed:
+            self._params(draft)
+            return
+        options = [
+            (f'{item["field"]}  on {item["sheet"]}', str(index))
+            for index, item in enumerate(draft.listed)
+        ]
+        self.push_screen(
+            PickScreen(
+                'Add a filter',
+                options,
+                lambda index: self._add_filter(draft, draft.listed[int(index)]),
+                lambda: self._params(draft),
+            )
+        )
+
+    def _add_filter(self, draft: '_Add', raw: ListedFilter) -> None:
+        self.push_screen(
+            FilterForm(
+                f'Filter {raw["field"]}',
+                _filter_item(raw),
+                draft.sheets[0],
+                draft.filters.append,
+            )
+        )
+
+    def _params(self, draft: '_Add') -> None:
+        if not draft.raw_params:
+            self._save_add(draft)
+            return
+        options = [
+            (item['name'], str(index)) for index, item in enumerate(draft.raw_params)
+        ]
+
+        def pick(index: str) -> None:
+            raw = draft.raw_params[int(index)]
+
+            def save(pair: tuple[str, str]) -> None:
+                draft.params[pair[0]] = pair[1]
+
+            self.push_screen(ParamForm(raw['name'], raw['name'], raw['current'], save))
+
+        self.push_screen(
+            PickScreen('Set a parameter', options, pick, lambda: self._save_add(draft))
+        )
+
+    def _save_add(self, draft: '_Add') -> None:
+        job = Job(
+            draft.name,
+            draft.view,
+            draft.sheets,
+            draft.settings.name,
+            list(draft.filters),
+            dict(draft.params),
+        )
+        try:
+            append_job(
+                self.jobs_file,
+                replace(job, filters=resolved_filters(job)),
+                quiet=True,
+            )
+        except (JobError, OSError) as e:
+            self.notify(str(e), severity='error')
+            return
+        self.notify(f'Added {draft.name}')
+
+
+@dataclass
+class _Add:
+    settings: Settings
+    view: str
+    name: str
+    info: ViewInfo
+    sheets: list[str] = field(default_factory=list)
+    filters: list[ValuesFilter | RangeFilter] = field(default_factory=list)
+    params: dict[str, str] = field(default_factory=dict)
+    listed: list[ListedFilter] = field(default_factory=list)
+
+    @property
+    def raw_params(self) -> list[dict[str, str]]:
+        return self.info['params']
+
+
+class _TuiReport:
+    def live(self) -> AbstractContextManager[object]:  # noqa: PLR6301
+        return nullcontext()
+
+    def sheet(self, job: Job, done: int, sheet: str) -> None:  # noqa: PLR6301
+        ui.emit(f'{job.name}: exporting {sheet} ({done + 1}/{len(job.sheets)})')
+
+    def ok(self, job: Job, paths: Sequence[Path]) -> None:  # noqa: PLR6301
+        ui.emit(f'✓ {job.name}: {", ".join(map(str, paths))}')
+
+    def fail(self, job: Job, message: str) -> None:  # noqa: PLR6301
+        ui.emit(f'✗ {job.name}: {message.partition("\n")[0]}')
+
+    def summary(self, ok: int, total: int, rerun: str | None) -> None:  # noqa: ARG002, PLR6301
+        return None
+
+
+def _filter_item(raw: ListedFilter) -> ValuesFilter | RangeFilter:
+    if raw['type'] == 'range':
+        low, sep, high = raw['current'].partition(' .. ')
+        if not sep:
+            low = high = ''
+        return RangeFilter(raw['field'], raw['sheet'], low, high)
+    current = '' if raw['current'] == '(All)' else raw['current']
+    values = split_values(current) if current else []
+    return ValuesFilter(raw['field'], values, raw['sheet'])
 
 
 def run_tui(jobs_file: Path, out_dir: Path) -> None:

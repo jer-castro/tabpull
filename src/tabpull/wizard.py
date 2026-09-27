@@ -90,13 +90,17 @@ def warn(text: str) -> None:
     _line(f'[yellow]⚠ {escape(text)}[/]')
 
 
-def open_url(url: str) -> None:
-    say(f'Opening {url}')
+def launch_url(url: str) -> bool:
     if 'microsoft' in platform.release().lower() and (
         opener := shutil.which('wslview') or shutil.which('explorer.exe')
     ):
-        webbrowser.GenericBrowser(opener).open(url)
-    elif not webbrowser.open(url):
+        return bool(webbrowser.GenericBrowser(opener).open(url))
+    return bool(webbrowser.open(url))
+
+
+def open_url(url: str) -> None:
+    say(f'Opening {url}')
+    if not launch_url(url):
         warn('Could not open a browser; open the URL above yourself.')
 
 

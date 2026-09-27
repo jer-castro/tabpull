@@ -8,7 +8,7 @@ tabpull exports named worksheets from a published Tableau dashboard to UTF-8 CSV
 uv tool install git+https://github.com/jer-castro/tabpull
 ```
 
-That installs the `tabpull` command. Bare `tabpull` at a terminal opens an interactive screen. `setup`, `add`, `remove`, `run`, and `login` are subcommands and work the same with or without it. Pin a tag with `@vX.Y.Z` on the URL. Upgrade with `uv tool upgrade tabpull`.
+That installs the `tabpull` command. Bare `tabpull` at a terminal opens an interactive screen; add, setup, login, and run stay on that screen. `setup`, `add`, `remove`, `run`, and `login` are also subcommands and work the same with or without it. Pin a tag with `@vX.Y.Z` on the URL. Upgrade with `uv tool upgrade tabpull`.
 
 ## Why Embedding API
 
