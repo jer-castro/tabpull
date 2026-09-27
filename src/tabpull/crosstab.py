@@ -196,6 +196,11 @@ class RangeFilter:
     min: str | None = None
     max: str | None = None
 
+    def __post_init__(self) -> None:
+        if not (self.min or '').strip() and not (self.max or '').strip():
+            msg = f'range filter {self.field!r} needs a min, a max, or both'
+            raise JobError(msg)
+
 
 @dataclass(frozen=True)
 class Job:
@@ -362,14 +367,14 @@ def _calendar_day(year: int, month: int, day: int, original: str) -> date:
 def normalize_range_bound(value: str | None) -> str | None:
     """Turn an `M/D/YYYY` range bound into `YYYY-MM-DD`.
 
-    A blank stays blank and a number passes through. An impossible calendar day
+    A blank bound is open and a number passes through. An impossible calendar day
     is rejected. Any other text is a relative date or a date computed at run time.
     """
     if value is None:
         return None
     text = value.strip()
     if not text:
-        return value
+        return None
     if _NUMBER.fullmatch(text):
         return text
     us = _US_DATE.fullmatch(text)

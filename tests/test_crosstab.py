@@ -347,7 +347,7 @@ def test_parse_job_rejects_invalid_jobs(raw: dict[str, object]) -> None:
         (' 2024-01-31 ', '2024-01-31'),
         ('12', '12'),
         ('-1.5', '-1.5'),
-        ('', ''),
+        ('', None),
         (None, None),
     ],
 )
@@ -453,6 +453,43 @@ def test_filter_payload_leaves_an_omitted_bound_unset() -> None:
         'min': None,
         'max': '2024-02-01',
     }
+
+
+def test_jobs_file_range_with_a_blank_bound_leaves_that_end_open() -> None:
+    job = parse_job(
+        tomllib.loads(
+            """
+            [[job]]
+            name = "daily"
+            site = "demo"
+            view = "W/V"
+            sheets = ["Totals"]
+            filters = [{ field = "Order Date", min = "", max = "2/1/2024" }]
+            """
+        )['job'][0]
+    )
+
+    assert crosstab.filter_payload(job.filters[0])['min'] is None
+
+
+@pytest.mark.parametrize(
+    'bounds',
+    ['', 'min = "", ', 'min = " ", max = "", '],
+)
+def test_jobs_file_rejects_a_range_with_no_bounds(bounds: str) -> None:
+    raw = tomllib.loads(
+        f"""
+        [[job]]
+        name = "daily"
+        site = "demo"
+        view = "W/V"
+        sheets = ["Totals"]
+        filters = [{{ {bounds}field = "Order Date", sheet = "Totals" }}]
+        """
+    )['job'][0]
+
+    with pytest.raises(JobError, match=r"'daily'.*needs a min, a max, or both"):
+        parse_job(raw)
 
 
 def test_filters_for_run_replaces_the_same_field_and_sheet(
