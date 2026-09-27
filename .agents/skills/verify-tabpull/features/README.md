@@ -29,6 +29,6 @@ Each feature file has an H1 and one paragraph, then exactly these H2s in order: 
 
 ## Features
 
-- [Embed export](./run-embed.md) covers dashboard sheet crosstabs, hidden sheets, values filters, date ranges and parameters.
+- [Embed export](./run-embed.md) covers dashboard sheet crosstabs, hidden sheets, values filters, date ranges, open bounds, `run --filter` overrides, and parameters.
 - [Add a job](./add.md) covers view search by URL or fuzzy name, picking sheets and filters, flag add, and saving the job.
 - [SSO session](./login.md) covers per-site session reuse, the expired-session paths, and `login`.

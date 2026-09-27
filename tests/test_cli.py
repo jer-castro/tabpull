@@ -459,6 +459,55 @@ def test_prompted_add_keeps_the_sheet_on_each_filter(
     ]
 
 
+def test_prompted_add_asks_again_when_both_range_bounds_are_blank(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    order_date = {
+        'field': 'Order Date',
+        'sheet': 'A Title Sheet',
+        'type': 'range',
+        'current': '',
+    }
+    _scripted_ask(
+        monkeypatch,
+        [['A Title Sheet'], order_date, '', ' ', '', '2/1/2024', 'Done'],
+    )
+
+    class Page:
+        def evaluate(self, script: str, arg: object = None) -> dict[str, object]:
+            return {
+                'sheets': [
+                    {
+                        'name': 'A Title Sheet',
+                        'filters': [
+                            {'field': 'Order Date', 'type': 'range', 'current': ''},
+                        ],
+                    }
+                ],
+                'params': [],
+            }
+
+        def close(self) -> None:
+            return None
+
+    class Item:
+        name = 'Dashboard 1'
+        content_url = 'CrosstabMe/sheets/Dashboard1'
+
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr(crosstab, 'open_view', lambda *_a, **_k: Page())
+    monkeypatch.setattr(crosstab, '_find_view', lambda _settings: Item())
+
+    crosstab.add_job(_settings('demo', tmp_path), jobs, name='prompted')
+
+    assert 'Give a from, a to, or both.' in capsys.readouterr().out
+    assert crosstab.load_jobs(jobs)[0].filters == [
+        crosstab.RangeFilter('Order Date', 'A Title Sheet', None, '2/1/2024'),
+    ]
+
+
 def test_prompted_add_refuses_a_relative_range_before_saving(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -804,6 +853,188 @@ sheets = ["S"]
 
     assert crosstab.main(['--jobs', str(jobs), 'run', 'a']) == 0
     assert [path.resolve() for path in seen] == [work.resolve()]
+
+
+def test_run_help_documents_filter_overrides(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        crosstab.main(['run', '--help'])
+    text = capsys.readouterr().out
+
+    assert exc.value.code == 0
+    assert '--filter' in text
+    assert 'every job' in text
+    assert 'does not rewrite' in text
+    assert 'Order Date=2026-09-01..' in text
+    assert 'daily-west weekly-east' in text
+
+
+def test_run_filter_overrides_every_selected_job_without_rewriting_the_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    out = tmp_path / 'out'
+    jobs.write_text(
+        """
+[[job]]
+name = "daily"
+site = "one"
+view = "W/V"
+sheets = ["Totals", "Detail"]
+filters = [
+  { field = "Order Date", min = "2026-09-01", max = "2026-09-25", sheet = "Totals" },
+  { field = "Region", values = ["West"], sheet = "Detail" },
+]
+
+[[job]]
+name = "weekly"
+site = "one"
+view = "W/V"
+sheets = ["Detail"]
+""",
+        encoding='utf-8',
+    )
+    saved = jobs.read_text(encoding='utf-8')
+    seen: list[Job] = []
+
+    def export_embed(
+        _context: object, _settings: object, job: Job, out_dir: Path, **_kwargs: object
+    ) -> list[Path]:
+        seen.append(job)
+        return [out_dir / f'{job.name}.csv']
+
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'load_site', lambda name: _settings(name, tmp_path))
+    monkeypatch.setattr(crosstab, 'browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr(crosstab, 'export_embed', export_embed)
+
+    code = crosstab.main(
+        [
+            '--jobs',
+            str(jobs),
+            '--out',
+            str(out),
+            'run',
+            '--filter',
+            'Order Date=2026-10-01..',
+            '--filter',
+            'Ship Mode=First Class @Detail',
+        ]
+    )
+    note = capsys.readouterr().out
+
+    assert code == 0
+    assert jobs.read_text(encoding='utf-8') == saved
+    assert [job.name for job in seen] == ['daily', 'weekly']
+    assert seen[0].filters == [
+        crosstab.RangeFilter('Order Date', 'Totals', '2026-10-01', None),
+        crosstab.ValuesFilter('Region', ['West'], 'Detail'),
+        crosstab.ValuesFilter('Ship Mode', ['First Class'], 'Detail'),
+    ]
+    assert seen[1].filters == [
+        crosstab.RangeFilter('Order Date', 'Detail', '2026-10-01', None),
+        crosstab.ValuesFilter('Ship Mode', ['First Class'], 'Detail'),
+    ]
+    assert 'daily: filter' not in note
+    assert "weekly: filter 'Order Date' names no sheet" in note
+    assert "applying it on 'Detail'" in note
+    assert 'Ship Mode' not in note
+
+
+def test_run_filter_refuses_a_relative_date(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(
+        """
+[[job]]
+name = "daily"
+site = "one"
+view = "W/V"
+sheets = ["Totals"]
+filters = [
+  { field = "Order Date", min = "2026-09-01", max = "2026-09-25", sheet = "Totals" },
+]
+""",
+        encoding='utf-8',
+    )
+    saved = jobs.read_text(encoding='utf-8')
+
+    def export_embed(*_args: object, **_kwargs: object) -> list[Path]:
+        msg = 'exported'
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'export_embed', export_embed)
+
+    with pytest.raises(SystemExit, match='relative date') as exc:
+        crosstab.main(
+            [
+                '--jobs',
+                str(jobs),
+                'run',
+                'daily',
+                '--filter',
+                'Order Date=yesterday..',
+            ]
+        )
+
+    assert 'YYYY-MM-DD or M/D/YYYY' in str(exc.value)
+    assert jobs.read_text(encoding='utf-8') == saved
+
+
+def test_failed_run_rerun_repeats_the_filter_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(
+        """
+[[job]]
+name = "daily"
+site = "one"
+view = "W/V"
+sheets = ["Totals"]
+""",
+        encoding='utf-8',
+    )
+    saved = jobs.read_text(encoding='utf-8')
+    fail = [True]
+
+    def export_embed(
+        _context: object, _settings: object, job: Job, out_dir: Path, **_kwargs: object
+    ) -> list[Path]:
+        if fail.pop():
+            msg = 'boom'
+            raise JobError(msg)
+        return [out_dir / f'{job.name}.csv']
+
+    monkeypatch.setattr(crosstab, 'sync_playwright', _Playwright)
+    monkeypatch.setattr(crosstab, 'load_site', lambda name: _settings(name, tmp_path))
+    monkeypatch.setattr(crosstab, 'browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr(crosstab, 'export_embed', export_embed)
+
+    assert (
+        crosstab.main(
+            [
+                '--jobs',
+                str(jobs),
+                '--out',
+                'reports',
+                'run',
+                '--filter',
+                'Order Date=2026-09-01..',
+            ]
+        )
+        == 1
+    )
+    help_line = capsys.readouterr().out.splitlines()[-1]
+    rerun = help_line.split('rerun them: ', 1)[1]
+
+    assert 'Order Date=2026-09-01..' in rerun
+    fail.append(False)
+    assert crosstab.main(shlex.split(rerun)[1:]) == 0
+    assert jobs.read_text(encoding='utf-8') == saved
 
 
 def test_failed_run_prints_a_rerun_command_that_selects_the_failed_job(

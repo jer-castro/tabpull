@@ -85,7 +85,7 @@ HOST_PAGE = string.Template("""<!doctype html>
 <script type="module">
 try {
   const api = await import($script_url);
-  window.tableauEnums = { CrosstabFileFormat: api.CrosstabFileFormat, FilterUpdateType: api.FilterUpdateType };
+  window.tableauEnums = { CrosstabFileFormat: api.CrosstabFileFormat, FilterDomainType: api.FilterDomainType, FilterUpdateType: api.FilterUpdateType };
   const viz = new api.TableauViz();
   viz.src = $view_url;
   viz.toolbar = 'hidden';
@@ -157,12 +157,25 @@ APPLY_JS = """async ({ filters, params }) => {
     if (/^-?\\d+(\\.\\d+)?$/.test(v)) return Number(v);
     throw new Error(v + ' is a relative date or a date computed at run time; use YYYY-MM-DD or M/D/YYYY');
   };
+  // applyRangeFilterAsync refuses a null bound, so an open side takes the filter's own endpoint.
+  const domainOf = async (ws, f) => {
+    const found = (await ws.getFiltersAsync()).find((x) => x.fieldName === f.field && x.filterType === 'range');
+    if (!found) throw new Error('No range filter on ' + f.field + ' in ' + f.sheet + ' to take an open end from; give both min and max');
+    return found.getDomainAsync(window.tableauEnums.FilterDomainType.Database);
+  };
   for (const [name, value] of Object.entries(params)) await viz.workbook.changeParameterValueAsync(name, value);
   for (const f of filters) {
     const ws = worksheets.find((w) => w.name === f.sheet);
     if (!ws) throw new Error('Sheet not in this view: ' + f.sheet);
-    if (f.values) await ws.applyFilterAsync(f.field, f.values, window.tableauEnums.FilterUpdateType.Replace);
-    else await ws.applyRangeFilterAsync(f.field, { min: toValue(f.min), max: toValue(f.max) });
+    if (f.values) {
+      await ws.applyFilterAsync(f.field, f.values, window.tableauEnums.FilterUpdateType.Replace);
+      continue;
+    }
+    const domain = f.min == null || f.max == null ? await domainOf(ws, f) : null;
+    await ws.applyRangeFilterAsync(f.field, {
+      min: f.min == null ? domain.min.value : toValue(f.min),
+      max: f.max == null ? domain.max.value : toValue(f.max),
+    });
   }
 }"""
 
@@ -216,6 +229,17 @@ def _parse_filter(raw: object) -> ValuesFilter | RangeFilter:
         raise JobError(msg)
     raw = dict(raw)
     raw['sheet'] = str(raw.get('sheet') or '').strip()
+    if 'values' not in raw:
+        bounds = [raw.get('min'), raw.get('max')]
+        if any(bound is not None and not isinstance(bound, str) for bound in bounds):
+            msg = (
+                f'range filter {raw.get("field")!r}: quote min and max, '
+                'as in min = "2024-01-01"'
+            )
+            raise JobError(msg)
+        if not any((bound or '').strip() for bound in bounds):
+            msg = f'range filter {raw.get("field")!r} needs a min, a max, or both'
+            raise JobError(msg)
     try:
         return ValuesFilter(**raw) if 'values' in raw else RangeFilter(**raw)
     except TypeError as e:
@@ -296,12 +320,46 @@ def resolved_filters(job: Job) -> list[ValuesFilter | RangeFilter]:
         if item.sheet:
             resolved.append(item)
             continue
-        print(
-            f'  {job.name}: filter {item.field!r} names no sheet; '
-            f'applying it on {default!r}, the first sheet in the job.'
-        )
+        _note_default_sheet(job, item.field, default)
         resolved.append(replace(item, sheet=default))
     return resolved
+
+
+def _note_default_sheet(job: Job, field_name: str, sheet: str) -> None:
+    print(
+        f'  {job.name}: filter {field_name!r} names no sheet; '
+        f'applying it on {sheet!r}, the first sheet in the job.'
+    )
+
+
+def _overrides(
+    item: ValuesFilter | RangeFilter,
+    existing: ValuesFilter | RangeFilter,
+    default_sheet: str,
+) -> bool:
+    return existing.field == item.field and (
+        not item.sheet or (existing.sheet or default_sheet) == item.sheet
+    )
+
+
+def filters_for_run(job: Job, overrides: Sequence[ValuesFilter | RangeFilter]) -> Job:
+    if not overrides:
+        return job
+    default = job.sheets[0]
+    filters: list[ValuesFilter | RangeFilter] = list(job.filters)
+    for item in overrides:
+        if any(_overrides(item, existing, default) for existing in filters):
+            filters = [
+                replace(item, sheet=item.sheet or existing.sheet)
+                if _overrides(item, existing, default)
+                else existing
+                for existing in filters
+            ]
+            continue
+        if not item.sheet:
+            _note_default_sheet(job, item.field, default)
+        filters.append(replace(item, sheet=item.sheet or default))
+    return replace(job, filters=filters)
 
 
 def _calendar_day(year: int, month: int, day: int, original: str) -> date:
@@ -315,14 +373,14 @@ def _calendar_day(year: int, month: int, day: int, original: str) -> date:
 def normalize_range_bound(value: str | None) -> str | None:
     """Turn an `M/D/YYYY` range bound into `YYYY-MM-DD`.
 
-    A blank stays blank and a number passes through. An impossible calendar day
+    A blank bound is open and a number passes through. An impossible calendar day
     is rejected. Any other text is a relative date or a date computed at run time.
     """
     if value is None:
         return None
     text = value.strip()
     if not text:
-        return value
+        return None
     if _NUMBER.fullmatch(text):
         return text
     us = _US_DATE.fullmatch(text)
@@ -771,14 +829,13 @@ def _prompt_filters(listed: list[_ListedFilter]) -> list[ValuesFilter | RangeFil
         field_name, sheet = item['field'], item['sheet']
         if item['type'] == 'range':
             low, high = _range_ends(item['current'])
-            filters.append(
-                RangeFilter(
-                    field_name,
-                    sheet,
-                    _prompt_bound(f'{field_name} from', low),
-                    _prompt_bound(f'{field_name} to', high),
-                )
-            )
+            while True:
+                start = _prompt_bound(f'{field_name} from', low)
+                end = _prompt_bound(f'{field_name} to', high)
+                if start or end:
+                    break
+                ui.console.print('Give a from, a to, or both.')
+            filters.append(RangeFilter(field_name, sheet, start, end))
         else:
             default = '' if item['current'] == '(All)' else item['current']
             values = _prompt_text(f'{field_name} values (a|b)', default=default)
@@ -912,7 +969,6 @@ def add_job(settings: Settings, jobs_path: Path, name: str | None = None) -> Non
 
 
 def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
-    """Parse `Field=a|b` or `Field=min..max`, with an optional ` @Sheet`."""
     body, sep, sheet = spec.rpartition(' @')
     if not sep:
         body, sheet = spec, ''
@@ -927,6 +983,12 @@ def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
         raise JobError(msg)
     if '..' in value:
         low, _, high = value.partition('..')
+        if not low.strip() and not high.strip():
+            msg = (
+                f'filter {spec!r} should look like Field=a|b or Field=min..max, '
+                'with an optional " @Sheet"'
+            )
+            raise JobError(msg)
         return RangeFilter(
             field_name,
             sheet,
@@ -1072,6 +1134,13 @@ def _file_flags(args: argparse.Namespace) -> list[str]:
     return flags
 
 
+def _run_flags(args: argparse.Namespace) -> list[str]:
+    flags = _file_flags(args)
+    for spec in args.filter_specs or []:
+        flags += ['--filter', spec]
+    return flags
+
+
 def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
     try:
         jobs = load_jobs(jobs_file)
@@ -1088,10 +1157,15 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
         )
         raise SystemExit(msg)
     selected = [job for job in jobs if not args.names or job.name in args.names]
+    try:
+        overrides = [parse_filter_spec(spec) for spec in args.filter_specs or []]
+        selected = [filters_for_run(job, overrides) for job in selected]
+    except JobError as e:
+        raise SystemExit(str(e)) from e
     report = (_TTYRun if ui.rich_output() else _PlainRun)(selected, out_dir)
     failed = run_jobs(selected, out_dir, report)
     # Flags before `--` so a job named like an option (`-daily`, `-h`) stays a name.
-    rerun = shlex.join(['tabpull', 'run', *_file_flags(args), '--', *failed])
+    rerun = shlex.join(['tabpull', 'run', *_run_flags(args), '--', *failed])
     report.summary(
         len(selected) - len(failed), len(selected), rerun if failed else None
     )
@@ -1333,7 +1407,7 @@ def _parser() -> tuple[_Parser, dict[str, _Parser]]:
         action='append',
         dest='filter_specs',
         metavar='SPEC',
-        help='Field=a|b or Field=min..max, optional " @Sheet" (repeatable)',
+        help='Field=a|b or Field=min..max (min.. or ..max leaves that side open); optional " @Sheet" (repeatable)',
     )
     add.add_argument(
         '--param',
@@ -1349,13 +1423,30 @@ def _parser() -> tuple[_Parser, dict[str, _Parser]]:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""writes <out>/<job>/<sheet>.csv, spaces in names become _
 
+--filter uses the same Field=a|b or Field=min..max syntax as add, including
+an open side (min.. or ..max). It applies to every job in this run and
+does not rewrite the jobs file. With no @Sheet it replaces the job's saved
+filter on that field on every sheet; with @Sheet, only that sheet's. A field
+the job does not filter is added, on @Sheet or else the first sheet.
+
 examples:
   tabpull run
   tabpull run daily-west
-  tabpull run daily-west --out ~/reports
+  tabpull run daily-west --filter "Order Date=2026-09-01.." --out ~/reports
+  tabpull run daily-west weekly-east --filter "Order Date=2026-09-01..2026-09-07"
 """,
     )
     run.add_argument('names', nargs='*', help='only these jobs (default: all)')
+    run.add_argument(
+        '--filter',
+        action='append',
+        dest='filter_specs',
+        metavar='SPEC',
+        help=(
+            'override Field=a|b or Field=min..max for this run only '
+            '(repeatable; applied to every selected job; jobs file unchanged)'
+        ),
+    )
     _add_file_flags(run, out=True, default=argparse.SUPPRESS)
     login = commands.add_parser('login', help='refresh a site SSO browser session')
     login.add_argument(
