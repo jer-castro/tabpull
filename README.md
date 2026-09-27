@@ -9,7 +9,7 @@
 
 <p align="center">
   <strong>Crosstab any sheet. Skip the workbook.</strong><br />
-  Hidden sheets included. Embedding API with your SSO session; a PAT finds the views.
+  Dashboard-only sheets included. Embedding API with your SSO session; a PAT finds the views.
 </p>
 
 <p align="center">
@@ -26,9 +26,9 @@
 
 ## Why
 
-The REST crosstab/data endpoints only export the first sheet when the view is a dashboard, and hidden (dashboard-only) sheets have no REST view at all.
+The REST crosstab/data endpoints only export the first sheet when the view is a dashboard, and a worksheet that lives only inside a published dashboard (often called a hidden sheet) is not published as its own view, so it has no REST view at all.
 
-tabpull does the hand path from the command line: open the dashboard, set filters, then Download → Crosstab → CSV. That includes hidden sheets and ones that aren't first alphabetically, and it works on sites where you're allowed to crosstab but not to download the workbook.
+tabpull does the hand path from the command line: open the dashboard, set filters, then Download → Crosstab → CSV. That includes dashboard-only sheets and ones that aren't first alphabetically, and it works on sites where you're allowed to crosstab but not to download the workbook.
 
 Dashboard sheets go through the Tableau Embedding API (`exportCrosstabAsync`) in a headless browser signed in with your SSO session. The PAT is still used to find views.
 
@@ -115,7 +115,7 @@ The token secret is not printed. Setup and login print the server and the Tablea
 name = "daily-west"
 site = "finance"                       # local name from `tabpull setup`
 view = "SalesWorkbook/Overview"        # Workbook/View from the URL
-sheets = ["Order Detail", "Totals"]    # any worksheet in the dashboard, hidden ones included
+sheets = ["Order Detail", "Totals"]    # any worksheet in the dashboard, dashboard-only ones included
 filters = [
   { field = "Region", values = ["West", "Central"] },
   { field = "Order Date", min = "2026-09-01", max = "2026-09-25", sheet = "Totals" },
