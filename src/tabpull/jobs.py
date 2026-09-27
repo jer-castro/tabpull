@@ -117,5 +117,10 @@ def job_to_toml(job: Job) -> str:
     return '\n'.join(lines) + '\n'
 
 
+def save_jobs(path: Path, jobs: list[Job]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('\n'.join(job_to_toml(job) for job in jobs), encoding='utf-8')
+
+
 def slug(text: str) -> str:
     return re.sub(r'[^\w.-]+', '_', text).strip('_') or 'export'

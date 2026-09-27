@@ -14,7 +14,15 @@ from playwright.sync_api import Error as PlaywrightError
 from rich.console import Console
 
 from tabpull import add, app, embed, run, tableau, ui, wizard
-from tabpull.jobs import Job, JobError, RangeFilter, ValuesFilter, load_jobs, parse_job
+from tabpull.jobs import (
+    Job,
+    JobError,
+    RangeFilter,
+    ValuesFilter,
+    job_to_toml,
+    load_jobs,
+    parse_job,
+)
 from tabpull.tableau import Settings, UnknownSiteError
 
 
@@ -215,7 +223,7 @@ def test_help_lists_the_subcommands(capsys: pytest.CaptureFixture[str]) -> None:
     text = capsys.readouterr().out
 
     assert exc.value.code == 0
-    for name in ('setup', 'add', 'run', 'login', '--jobs', '--out'):
+    for name in ('setup', 'add', 'remove', 'run', 'login', '--jobs', '--out'):
         assert name in text
 
 
@@ -1294,6 +1302,264 @@ def test_setup_writes_each_site_under_xdg(
     assert str(tableau.jobs_path()) in text
     assert 'folder you run tabpull from' in text
     assert first_value not in (work / '.env').read_text(encoding='utf-8')
+
+
+def _two_jobs() -> str:
+    return """
+[[job]]
+name = "daily"
+site = "finance"
+view = "Sales/Overview"
+sheets = ["Order Detail", "Totals"]
+filters = [
+  { field = "Region", values = ["West", "Central"], sheet = "Order Detail" },
+  { field = "Order Date", min = "2026-09-01", max = "2026-09-25", sheet = "Totals" },
+]
+params = { "Top N" = "25" }
+
+# hand note
+[[job]]
+name = "weekly"
+site = "finance"
+view = "Sales/Overview"
+sheets = ["Totals"]
+"""
+
+
+def _daily() -> Job:
+    return Job(
+        'daily',
+        'Sales/Overview',
+        ['Order Detail', 'Totals'],
+        'finance',
+        [
+            ValuesFilter('Region', ['West', 'Central'], 'Order Detail'),
+            RangeFilter('Order Date', 'Totals', '2026-09-01', '2026-09-25'),
+        ],
+        {'Top N': '25'},
+    )
+
+
+def test_remove_rewrites_the_jobs_file_and_keeps_the_other_job(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(_two_jobs(), encoding='utf-8')
+
+    assert app.main(['--jobs', str(jobs), 'remove', 'weekly']) == 0
+    text = jobs.read_text(encoding='utf-8')
+
+    assert load_jobs(jobs) == [_daily()]
+    assert text == job_to_toml(_daily())
+    assert '# hand note' not in text
+    assert f'Removed weekly from {jobs}' in capsys.readouterr().out
+
+
+def test_remove_unknown_name_lists_saved_jobs_and_leaves_the_file(
+    tmp_path: Path,
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(_two_jobs(), encoding='utf-8')
+    saved = jobs.read_text(encoding='utf-8')
+
+    with pytest.raises(SystemExit, match='Unknown jobs: aaa, nope') as exc:
+        app.main(['--jobs', str(jobs), 'remove', 'daily', 'nope', 'aaa'])
+
+    assert 'Saved jobs: daily, weekly' in str(exc.value)
+    assert jobs.read_text(encoding='utf-8') == saved
+
+
+def test_remove_all_jobs_leaves_an_empty_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(_two_jobs(), encoding='utf-8')
+
+    assert app.main(['remove', '--jobs', str(jobs), 'daily', 'weekly']) == 0
+
+    assert not jobs.read_text(encoding='utf-8')
+    assert load_jobs(jobs) == []
+    assert f'Removed daily, weekly from {jobs}' in capsys.readouterr().out
+    with pytest.raises(SystemExit, match='No jobs'):
+        app.main(['--jobs', str(jobs), 'remove', 'daily'])
+
+
+def test_remove_without_a_jobs_file_does_not_create_one(tmp_path: Path) -> None:
+    jobs = tmp_path / 'missing.toml'
+
+    with pytest.raises(SystemExit, match='No jobs') as exc:
+        app.main(['--jobs', str(jobs), 'remove', 'daily'])
+
+    assert 'tabpull add' in str(exc.value)
+    assert not jobs.exists()
+
+
+def test_remove_without_names_on_a_pipe_asks_for_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(_two_jobs(), encoding='utf-8')
+    saved = jobs.read_text(encoding='utf-8')
+    monkeypatch.setattr(ui, 'interactive', lambda: False)
+    monkeypatch.setattr(
+        ui,
+        'ask',
+        lambda question: (_ for _ in ()).throw(AssertionError(question)),
+    )
+
+    with pytest.raises(SystemExit, match='Pass job names to remove') as exc:
+        app.main(['--jobs', str(jobs), 'remove'])
+
+    assert 'Saved jobs: daily, weekly' in str(exc.value)
+    assert jobs.read_text(encoding='utf-8') == saved
+
+
+def test_remove_names_do_not_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(_two_jobs(), encoding='utf-8')
+    monkeypatch.setattr(ui, 'interactive', lambda: True)
+    monkeypatch.setattr(
+        ui,
+        'ask',
+        lambda question: (_ for _ in ()).throw(AssertionError(question)),
+    )
+
+    assert app.main(['--jobs', str(jobs), 'remove', 'weekly']) == 0
+    assert load_jobs(jobs) == [_daily()]
+
+
+def test_remove_prompts_and_confirms_before_writing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(_two_jobs(), encoding='utf-8')
+    seen: list[object] = []
+    answers = iter([['weekly'], True])
+
+    def ask(question: object) -> object:
+        seen.append(question)
+        return next(answers)
+
+    monkeypatch.setattr(ui, 'ask', ask)
+    monkeypatch.setattr(ui, 'interactive', lambda: True)
+
+    assert app.main(['--jobs', str(jobs), 'remove']) == 0
+
+    assert len(seen) == 2
+    assert load_jobs(jobs) == [_daily()]
+    assert f'Removed weekly from {jobs}' in capsys.readouterr().out
+
+
+def test_remove_prompt_with_no_selection_leaves_the_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(_two_jobs(), encoding='utf-8')
+    saved = jobs.read_text(encoding='utf-8')
+    seen: list[object] = []
+
+    def ask(question: object) -> object:
+        seen.append(question)
+        return []
+
+    monkeypatch.setattr(ui, 'ask', ask)
+    monkeypatch.setattr(ui, 'interactive', lambda: True)
+
+    assert app.main(['--jobs', str(jobs), 'remove']) == 0
+
+    assert len(seen) == 1
+    assert 'Nothing removed.' in capsys.readouterr().out
+    assert jobs.read_text(encoding='utf-8') == saved
+
+
+def test_remove_prompt_declines_the_confirm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(_two_jobs(), encoding='utf-8')
+    saved = jobs.read_text(encoding='utf-8')
+    answers = iter([['daily', 'weekly'], False])
+    seen: list[object] = []
+
+    def ask(question: object) -> object:
+        seen.append(question)
+        return next(answers)
+
+    monkeypatch.setattr(ui, 'ask', ask)
+    monkeypatch.setattr(ui, 'interactive', lambda: True)
+
+    assert app.main(['--jobs', str(jobs), 'remove']) == 0
+
+    assert len(seen) == 2
+    assert 'Nothing removed.' in capsys.readouterr().out
+    assert jobs.read_text(encoding='utf-8') == saved
+
+
+def test_remove_dashed_name_after_double_dash(tmp_path: Path) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(
+        """
+[[job]]
+name = "-daily"
+site = "finance"
+view = "W/V"
+sheets = ["S"]
+
+[[job]]
+name = "keep"
+site = "finance"
+view = "W/V"
+sheets = ["S"]
+""",
+        encoding='utf-8',
+    )
+
+    assert app.main(['--jobs', str(jobs), 'remove', '--', '-daily']) == 0
+    assert [job.name for job in load_jobs(jobs)] == ['keep']
+
+
+def test_remove_refuses_an_unreadable_jobs_file(tmp_path: Path) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text('[[job]\n', encoding='utf-8')
+    saved = jobs.read_text(encoding='utf-8')
+
+    with pytest.raises(SystemExit, match=r'jobs\.toml'):
+        app.main(['--jobs', str(jobs), 'remove', 'daily'])
+
+    assert jobs.read_text(encoding='utf-8') == saved
+
+
+def test_remove_help_says_an_empty_file_is_left(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        app.main(['remove', '--help'])
+    text = capsys.readouterr().out
+
+    assert exc.value.code == 0
+    assert '--jobs' in text
+    assert 'leaves that file empty' in text
+    assert 'daily-west' in text
+
+
+def test_remove_rich_panel_names_the_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(_two_jobs(), encoding='utf-8')
+    buffer = io.StringIO()
+    monkeypatch.setattr(ui, 'rich_output', lambda: True)
+    monkeypatch.setattr(ui, 'console', Console(file=buffer, width=120))
+
+    assert app.main(['--jobs', str(jobs), 'remove', 'weekly']) == 0
+
+    text = buffer.getvalue()
+    assert 'Removed' in text
+    assert 'weekly' in text
+    assert 'finance' in text
+    assert load_jobs(jobs) == [_daily()]
 
 
 def test_source_files_point_at_the_command(capsys: pytest.CaptureFixture[str]) -> None:

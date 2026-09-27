@@ -3,6 +3,7 @@
 Commands:
   setup  save a site's personal access token and SSO session
   add    record a job (prompts, or flags for the site, view, sheets, and filters)
+  remove delete saved jobs from the jobs file
   run    export jobs from the jobs file into the current folder
   login  refresh a site's SSO session
 
@@ -28,6 +29,7 @@ from tabpull.cli import VERSION_FLAGS, version
 from tabpull.filters import filters_for_run, parse_filter_spec
 from tabpull.home import file_flags, show_home
 from tabpull.jobs import JobError, load_jobs
+from tabpull.remove import remove_jobs
 from tabpull.run import open_report, run_jobs
 from tabpull.tableau import (
     MissingSettingsError,
@@ -231,6 +233,26 @@ def _parser() -> tuple[_Parser, dict[str, _Parser]]:
         help='parameter Name=value (repeatable)',
     )
     _add_file_flags(add, out=False, default=argparse.SUPPRESS)
+    remove = commands.add_parser(
+        'remove',
+        help='delete saved jobs from the jobs file',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  tabpull remove daily-west
+  tabpull remove daily-west weekly-east
+  tabpull remove
+
+With no names, a terminal asks which jobs to remove, then confirms.
+Otherwise pass the names. The jobs file is rewritten from the jobs that
+remain. Removing every job leaves that file empty.
+""",
+    )
+    remove.add_argument(
+        'names',
+        nargs='*',
+        help='jobs to delete (prompt when omitted on a terminal)',
+    )
+    _add_file_flags(remove, out=False, default=argparse.SUPPRESS)
     run = commands.add_parser(
         'run',
         help='export jobs into the current folder',
@@ -285,6 +307,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _cmd_login(args.site)
         case 'add':
             _cmd_add(args, jobs_file)
+        case 'remove':
+            remove_jobs(jobs_file, args.names)
         case 'run':
             return _cmd_run(args, jobs_file, out_dir)
         case _:
@@ -307,5 +331,5 @@ def cli() -> None:
 
 
 if __name__ == '__main__':
-    print('Run: tabpull setup | add | run | login', file=sys.stderr)
+    print('Run: tabpull setup | add | remove | run | login', file=sys.stderr)
     sys.exit(2)
