@@ -573,6 +573,57 @@ def test_sso_login_stops_when_cancelled(
     assert not settings.auth_path.exists()
 
 
+def test_sign_in_completing_on_the_last_poll_saves_the_session(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _site()
+    settings = tableau.load_site('demo')
+    clock = {'now': 1_000.0}
+    signed_in = {'ok': False}
+    polls = {'n': 0}
+    events: list[str] = []
+
+    def monotonic() -> float:
+        return clock['now']
+
+    class Page:
+        def goto(self, _url: str) -> None:
+            return None
+
+        def wait_for_timeout(self, _ms: int) -> None:
+            polls['n'] += 1
+            assert polls['n'] == 1
+            clock['now'] += tableau.LOGIN_TIMEOUT_S + 1
+            signed_in['ok'] = True
+
+    class Context:
+        def new_page(self) -> Page:
+            return Page()
+
+        def storage_state(self, path: Path) -> None:
+            Path(path).write_text('session', encoding='utf-8')
+            events.append('save')
+
+    class Browser:
+        def new_context(self, **_kwargs: object) -> Context:
+            return Context()
+
+        def close(self) -> None:
+            events.append('close')
+
+    monkeypatch.setattr(tableau.time, 'monotonic', monotonic)
+    monkeypatch.setattr(tableau, 'launch_browser', lambda *_a, **_k: Browser())
+    monkeypatch.setattr(tableau, 'session_valid', lambda *_a, **_k: signed_in['ok'])
+    notes: list[str] = []
+    with ui.capture(notes.append):
+        tableau.sso_login(cast('Playwright', object()), settings)
+
+    assert polls['n'] == 1
+    assert events == ['save', 'close']
+    assert settings.auth_path.read_text(encoding='utf-8') == 'session'
+    assert notes[-1] == f'Saved browser session to {settings.auth_path}'
+
+
 class _Cdp:
     def __init__(self, pid: int) -> None:
         self.pid = pid
