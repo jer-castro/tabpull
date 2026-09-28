@@ -553,22 +553,26 @@ class JobScreen(Screen[None]):
         else:
             self._open_param_catalog(kind, row, info)
 
-    def _matching_filter(self, raw: ListedFilter) -> int | None:
+    def _is_filter(
+        self, raw: ListedFilter, existing: ValuesFilter | RangeFilter
+    ) -> bool:
         probe = ValuesFilter(raw['field'], [], raw['sheet'])
-        default = self.job.sheets[0]
-        for index, existing in enumerate(self.job.filters):
-            if same_filter(probe, existing, default):
-                return index
-        return None
+        return same_filter(probe, existing, self.job.sheets[0])
+
+    def _matching_filter(self, raw: ListedFilter) -> int | None:
+        return next(
+            (i for i, f in enumerate(self.job.filters) if self._is_filter(raw, f)),
+            None,
+        )
 
     def _filter_options(
         self, listed: list[ListedFilter], *, skip: int | None
     ) -> list[tuple[str, str]]:
         options: list[tuple[str, str]] = []
         for index, raw in enumerate(listed):
-            match = self._matching_filter(raw)
-            if skip is not None and match == skip:
+            if skip is not None and self._is_filter(raw, self.job.filters[skip]):
                 continue
+            match = self._matching_filter(raw)
             label = f'{raw["field"]}  on {raw["sheet"]}'
             if match is not None:
                 saved = self.job.filters[match]

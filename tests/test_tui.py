@@ -1394,6 +1394,47 @@ def test_c_refuses_a_saved_field_and_replaces_a_row_with_the_live_default(
     _drive(jobs_file, steps)
 
 
+def test_c_on_a_later_duplicate_hides_its_own_field(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_daily(
+        jobs_file,
+        Job(
+            'daily',
+            'Sales/Overview',
+            ['Totals'],
+            'finance',
+            [
+                ValuesFilter('Region', ['West'], 'Totals'),
+                ValuesFilter('Region', ['East']),
+            ],
+            {},
+        ),
+    )
+    info = _view(
+        [
+            (
+                'Totals',
+                [
+                    ('Region', 'categorical', 'Central'),
+                    ('Ship Mode', 'categorical', 'Standard'),
+                ],
+            )
+        ],
+        [],
+    )
+    _patch_view(monkeypatch, info)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 'down', 'c')
+        await _until(pilot, lambda: isinstance(tui.screen, ChoiceScreen))
+        assert isinstance(tui.screen, ChoiceScreen)
+        assert tui.screen.title_text == 'Change field of Region'
+        assert _prompts(tui.screen) == ['Ship Mode  on Totals']
+
+    _drive(jobs_file, steps)
+
+
 def test_sheetless_saved_filter_matches_the_first_sheet(
     jobs_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
