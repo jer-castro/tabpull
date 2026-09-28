@@ -355,9 +355,14 @@ def _wait_for_sign_in(page: Page, context: BrowserContext, settings: Settings) -
                 return False
             if ui.stopped():
                 return True
-            if time.monotonic() > deadline:
-                msg = f'Gave up waiting for sign-in after {LOGIN_TIMEOUT_S}s.'
-                raise SystemExit(msg)
+        except Exception:
+            if ui.stopped():
+                return True
+            raise
+        if time.monotonic() > deadline:
+            msg = f'Gave up waiting for sign-in after {LOGIN_TIMEOUT_S}s.'
+            raise SystemExit(msg)
+        try:
             page.wait_for_timeout(LOGIN_POLL_MS)
         except Exception:
             if ui.stopped():
