@@ -521,7 +521,7 @@ class JobScreen(Screen[None]):
             self.notify(message, severity='error', timeout=10)
             self._typed_fallback(kind, row)
 
-        self.app.start_task(
+        started = self.app.start_task(
             TaskScreen(
                 f'Opening {view}…',
                 work,
@@ -530,6 +530,8 @@ class JobScreen(Screen[None]):
                 on_cancel=lambda: self.notify('Cancelled.', severity='warning'),
             )
         )
+        if not started:
+            self._typed_fallback(kind, row)
 
     def _typed_fallback(self, kind: str, row: int | None) -> None:
         if kind == 'sheets':
@@ -754,11 +756,12 @@ class TabpullApp(App[None]):
     def release_task(self, key: int) -> None:
         self._tasks.discard(key)
 
-    def start_task[T](self, screen: TaskScreen[T]) -> None:
+    def start_task[T](self, screen: TaskScreen[T]) -> bool:
         if self._tasks:
             self.notify('Still stopping the previous task…', severity='warning')
-            return
+            return False
         self.push_screen(screen)
+        return True
 
     def action_help(self) -> None:
         if self.screen.query('HelpPanel'):

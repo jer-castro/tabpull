@@ -1558,6 +1558,30 @@ def test_failed_view_read_opens_a_blank_filter_form_until_the_view_changes(
     _drive(jobs_file, steps)
 
 
+def test_n_uses_the_typed_form_while_a_cancelled_open_is_still_stopping(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = _notes(monkeypatch)
+    hold = threading.Event()
+    seen, _opened = _patch_view(monkeypatch, _view([], []), hold=hold)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 'n')
+        await _until(pilot, lambda: isinstance(tui.screen, TaskScreen))
+        await pilot.press('escape')
+        await _until(pilot, lambda: isinstance(tui.screen, JobScreen))
+        await pilot.press('n')
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        form = tui.screen
+        assert isinstance(form, FilterForm)
+        assert form.title_text == 'New filter'
+        assert 'Still stopping the previous task…' in notes
+        assert seen == ['Sales/Overview']
+        hold.set()
+
+    _drive(jobs_file, steps)
+
+
 def test_identical_filter_rows_can_still_be_edited(
     jobs_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
