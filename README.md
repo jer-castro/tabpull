@@ -50,7 +50,7 @@ tabpull login --site finance
 tabpull --version
 ```
 
-With no command at a terminal, tabpull opens a full-screen list of sites and jobs. Open a job to change its filters (values or range bounds), parameters, sheets, view, site, and name. Each change is checked and saved to the jobs file right away. `r` runs the selected or marked jobs, `a` adds, `d` removes after a confirm, `s` and `l` run setup and login. Run, add, setup, and login happen on the screen; escape or ctrl+c cancels a running step. The footer lists the keys, `?` shows all of them, `q` quits.
+With no command at a terminal, tabpull opens a full-screen list of sites and jobs. Open a job to change its filters (values or range bounds), parameters, sheets, view, site, and name, picking filters, parameters, and sheets from the live view when it opens and from the typed forms when it does not. Each change is checked and saved to the jobs file right away. `r` runs the selected or marked jobs, `a` adds, `d` removes after a confirm, `s` and `l` run setup and login. Run, add, setup, and login happen on the screen; escape or ctrl+c cancels a running step. The footer lists the keys, `?` shows all of them, `q` quits.
 
 With no command and no terminal (a pipe or a script), tabpull prints configured sites, saved jobs, the jobs file, the output folder, and the next commands in [TOON](https://toonformat.dev/). It never waits for keys. Errors, including an unknown flag, print `error: ...` on stdout. A usage error exits 2. Any other failure exits 1.
 

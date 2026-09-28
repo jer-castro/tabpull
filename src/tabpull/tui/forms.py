@@ -172,10 +172,6 @@ class SheetsForm(Form[list[str]]):
     def fields(self) -> ComposeResult:
         yield Label('One worksheet per line, exactly as named in the dashboard')
         yield TextArea('\n'.join(self.sheets), id='sheets')
-        yield Label(
-            'Run `tabpull add` to pick sheets from the live view instead.',
-            classes='hint',
-        )
 
     def build(self) -> list[str]:
         text = self.query_one('#sheets', TextArea).text
@@ -402,15 +398,27 @@ class ChecksForm(Form[list[str]]):
     ]
 
     def __init__(
-        self, title: str, options: list[str], commit: Callable[[list[str]], None]
+        self,
+        title: str,
+        options: list[str],
+        commit: Callable[[list[str]], None],
+        *,
+        ticked: set[str] | None = None,
+        label_suffix: dict[str, str] | None = None,
     ) -> None:
         super().__init__(title, commit)
         self._options = options
+        self._ticked = ticked or set()
+        self._label_suffix = label_suffix or {}
 
     def fields(self) -> ComposeResult:
         yield Label('Space toggles a sheet. Save keeps the ticked ones.')
+        suffixes, ticked = self._label_suffix, self._ticked
         yield SelectionList[str](
-            *((name, name, False) for name in self._options),
+            *(
+                (f'{name}{suffixes.get(name, "")}', name, name in ticked)
+                for name in self._options
+            ),
             id='checks',
         )
 

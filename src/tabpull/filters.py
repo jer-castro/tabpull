@@ -34,11 +34,18 @@ def _note_default_sheet(job: Job, field_name: str, sheet: str) -> None:
     )
 
 
-def _overrides(
+def same_filter(
     item: ValuesFilter | RangeFilter,
     existing: ValuesFilter | RangeFilter,
     default_sheet: str,
 ) -> bool:
+    """Report whether `item` is the same filter row as `existing`.
+
+    Field names must match. A sheetless item matches that field on every
+    sheet, which is how a run override with no `` @Sheet`` replaces it
+    everywhere. Otherwise the saved sheet, or the job's first sheet when
+    the saved row names none, must equal the item's sheet.
+    """
     return existing.field == item.field and (
         not item.sheet or (existing.sheet or default_sheet) == item.sheet
     )
@@ -50,10 +57,10 @@ def filters_for_run(job: Job, overrides: Sequence[ValuesFilter | RangeFilter]) -
     default = job.sheets[0]
     filters: list[ValuesFilter | RangeFilter] = list(job.filters)
     for item in overrides:
-        if any(_overrides(item, existing, default) for existing in filters):
+        if any(same_filter(item, existing, default) for existing in filters):
             filters = [
                 replace(item, sheet=item.sheet or existing.sheet)
-                if _overrides(item, existing, default)
+                if same_filter(item, existing, default)
                 else existing
                 for existing in filters
             ]
