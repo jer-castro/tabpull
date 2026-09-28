@@ -1,6 +1,8 @@
 import csv
-from collections.abc import Sequence
-from contextlib import AbstractContextManager, nullcontext
+import signal
+import threading
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from functools import partial
 from pathlib import Path
 from typing import Protocol
@@ -28,12 +30,39 @@ from tabpull.tableau import (
     MissingSettingsError,
     UnknownSiteError,
     browser_session,
+    close_on_stop,
     load_site,
 )
 
 
 def _first_line(message: str) -> str:
     return message.partition('\n')[0] or message
+
+
+@contextmanager
+def _hold_sigint() -> Iterator[None]:
+    # KeyboardInterrupt inside a blocked sync Playwright call sticks driver
+    # shutdown, so Ctrl-C never returns to the shell. Hold the signal here.
+    # The driver is in this process group and still closes the browser; the
+    # interrupt is delivered once that shutdown has finished.
+    block = getattr(signal, 'pthread_sigmask', None)
+    if block is None or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    block(signal.SIG_BLOCK, {signal.SIGINT})
+    try:
+        yield
+    finally:
+        block(signal.SIG_UNBLOCK, {signal.SIGINT})
+
+
+def _interrupted() -> bool:
+    if ui.stopped():
+        return True
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    pending = getattr(signal, 'sigpending', None)
+    return bool(pending and signal.SIGINT in pending())
 
 
 class _PlainRun:
@@ -167,14 +196,18 @@ def _export_group(
     )
     try:
         context = browser_session(pw, settings)
-    except SystemExit as e:
+    except (SystemExit, PlaywrightError) as e:
+        if _interrupted():
+            return _fail_all(site_jobs, 'Cancelled.', report)
+        if isinstance(e, PlaywrightError):
+            raise
         message = (
             e.code if isinstance(e.code, str) else 'could not open a browser session'
         )
         return _fail_all(site_jobs, message, report)
     failed: list[str] = []
     for job in site_jobs:
-        if ui.stopped():
+        if _interrupted():
             failed.append(job.name)
             report.fail(job, 'Cancelled.')
             continue
@@ -188,7 +221,7 @@ def _export_group(
             )
         except (JobError, PlaywrightError, OSError, UnicodeError, csv.Error) as e:
             failed.append(job.name)
-            report.fail(job, str(e))
+            report.fail(job, 'Cancelled.' if _interrupted() else str(e))
         else:
             report.ok(job, paths)
     return failed
@@ -204,10 +237,9 @@ def run_jobs(jobs: Sequence[Job], out_dir: Path, report: Report) -> list[str]:
     failed: list[str] = []
     if not groups:
         return failed
-    # ponytail: cancel is checked between jobs, not mid-export. Close the browser to stop a stuck sheet.
-    with report.live(), sync_playwright() as pw:
+    with _hold_sigint(), report.live(), sync_playwright() as pw, close_on_stop():
         for site_name, site_jobs in groups:
-            if ui.stopped():
+            if _interrupted():
                 failed += _fail_all(site_jobs, 'Cancelled.', report)
                 continue
             failed += _export_group(pw, site_name, site_jobs, out_dir, report)

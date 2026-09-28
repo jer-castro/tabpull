@@ -12,6 +12,7 @@ from playwright.sync_api import BrowserContext, Page
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from tabpull import ui
 from tabpull.filters import normalize_range_bound, resolved_filters
 from tabpull.jobs import Job, JobError, RangeFilter, ValuesFilter, slug
 from tabpull.tableau import Settings
@@ -164,6 +165,22 @@ def _refuse_story(page: Page) -> None:
         raise JobError(msg) from e
 
 
+def _publish_csv(path: Path, text: str) -> None:
+    if ui.stopped():
+        msg = 'Cancelled.'
+        raise JobError(msg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f'.{path.name}.partial')
+    try:
+        partial.write_text(text, encoding='utf-8')
+        if ui.stopped():
+            msg = 'Cancelled.'
+            raise JobError(msg)
+        partial.replace(path)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
 def open_view(context: BrowserContext, settings: Settings, view: str) -> Page:
     page = context.new_page()
     host = settings.server + HOST_PATH
@@ -213,16 +230,18 @@ def export_embed(
         )
         written = []
         for sheet in job.sheets:
+            if ui.stopped():
+                msg = 'Cancelled.'
+                raise JobError(msg)
             if on_sheet is not None:
                 on_sheet(len(written), sheet)
             with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as download:
                 page.evaluate(EXPORT_JS, sheet)
+            if ui.stopped():
+                msg = 'Cancelled.'
+                raise JobError(msg)
             path = out_dir / slug(job.name) / f'{slug(sheet)}.csv'
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                normalize_csv(Path(download.value.path()).read_bytes()),
-                encoding='utf-8',
-            )
+            _publish_csv(path, normalize_csv(Path(download.value.path()).read_bytes()))
             written.append(path)
         return written
     finally:

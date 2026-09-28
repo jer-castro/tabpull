@@ -40,6 +40,10 @@ def stopped() -> bool:
     return bool(stop and stop())
 
 
+def captures_stop() -> bool:
+    return _stop.get() is not None
+
+
 @contextmanager
 def capture(
     sink: Callable[[str], None], stop: Callable[[], bool] | None = None

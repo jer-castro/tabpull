@@ -3,14 +3,20 @@ import io
 import re
 import runpy
 import shlex
+import signal
+import subprocess  # noqa: S404
 import sys
+import threading
+import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any, Self, cast
 
 import pytest
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import sync_playwright
 from rich.console import Console
 
 from tabpull import add, app, embed, run, tableau, ui, wizard
@@ -1300,6 +1306,202 @@ sheets = ["Gamma"]
     assert 'bad-job' in buffer.getvalue()
     assert 'good-job' in buffer.getvalue()
     assert 'broken view' in buffer.getvalue()
+
+
+class _Cdp:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+
+    def send(self, method: str) -> dict[str, list[dict[str, object]]]:
+        assert method == 'SystemInfo.getProcessInfo'
+        return {'processInfo': [{'type': 'browser', 'id': self.pid}]}
+
+    def detach(self) -> None:
+        return None
+
+
+class _Launcher:
+    def __init__(self, pid: int) -> None:
+        browser = type('Browser', (), {})()
+        vars(browser)['new_browser_cdp_session'] = lambda: _Cdp(pid)
+        vars(browser)['on'] = lambda *_args: None
+        self.browser = browser
+        self.chromium = self
+
+    def launch(self, **_kwargs: object) -> object:
+        return self.browser
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+class _CancelReport:
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str]] = []
+
+    def live(self) -> AbstractContextManager[object]:
+        return nullcontext()
+
+    def sheet(self, job: Job, done: int, sheet: str) -> None:
+        return None
+
+    def ok(self, job: Job, paths: Sequence[Path]) -> None:
+        self.rows.append((job.name, 'ok'))
+
+    def fail(self, job: Job, message: str) -> None:
+        self.rows.append((job.name, message))
+
+    def summary(self, ok: int, total: int, rerun: str | None) -> None:
+        return None
+
+
+def _sleeper() -> subprocess.Popen[bytes]:
+    return subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+
+
+def test_cancel_during_export_reports_cancelled_without_a_csv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    proc = _sleeper()
+    entered = threading.Event()
+    stop = {'on': False}
+
+    class Page:
+        def evaluate(self, script: str, _arg: object = None) -> None:
+            if script == embed.EXPORT_JS:
+                entered.set()
+                proc.wait()
+                msg = 'Target page, context or browser has been closed'
+                raise PlaywrightError(msg)
+
+        def expect_download(self, timeout: int) -> object:
+            class Expect:
+                def __enter__(self) -> Self:
+                    return self
+
+                def __exit__(self, *_args: object) -> None:
+                    return None
+
+            return Expect()
+
+        def close(self) -> None:
+            return None
+
+    def flip() -> None:
+        assert entered.wait(5)
+        stop['on'] = True
+
+    def browser_session(pw: Any, _settings: object) -> object:  # noqa: ANN401
+        tableau.launch_browser(pw, headless=True)
+        return object()
+
+    monkeypatch.setattr(run, 'sync_playwright', lambda: _Launcher(proc.pid))
+    monkeypatch.setattr(run, 'load_site', lambda name: _settings(name, tmp_path))
+    monkeypatch.setattr(run, 'browser_session', browser_session)
+    monkeypatch.setattr(embed, 'open_view', lambda *_args, **_kwargs: Page())
+    threading.Thread(target=flip, daemon=True).start()
+    report = _CancelReport()
+    job = Job('daily', 'W/V', ['Totals'], 'demo')
+    try:
+        with ui.capture(lambda _line: None, lambda: stop['on']):
+            started = time.monotonic()
+            failed = run.run_jobs([job], tmp_path, report)
+            elapsed = time.monotonic() - started
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+
+    assert elapsed < 3
+    assert failed == ['daily']
+    assert report.rows == [('daily', 'Cancelled.')]
+    assert not (tmp_path / 'daily' / 'Totals.csv').exists()
+    assert list(tmp_path.rglob('*.partial')) == []
+
+
+def test_cancel_before_publish_leaves_no_csv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    raw = tmp_path / 'download.csv'
+    raw.write_bytes(b'a,b\n1,2\n')
+    stop = {'on': False}
+
+    class Download:
+        def path(self) -> str:
+            stop['on'] = True
+            return str(raw)
+
+    class Expect:
+        value = Download()
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class Page:
+        def evaluate(self, _script: str, _arg: object = None) -> None:
+            return None
+
+        def expect_download(self, timeout: int) -> Expect:
+            return Expect()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(embed, 'open_view', lambda *_args, **_kwargs: Page())
+    job = Job('daily', 'W/V', ['Totals'], 'demo')
+    out = tmp_path / 'out'
+    with (
+        ui.capture(lambda _line: None, lambda: stop['on']),
+        pytest.raises(JobError, match='Cancelled'),
+    ):
+        embed.export_embed(cast('Any', object()), _settings('demo', tmp_path), job, out)
+
+    assert not (out / 'daily' / 'Totals.csv').exists()
+    assert list(out.rglob('*.partial')) == []
+
+
+def test_cancel_kills_the_browser_where_signal_has_no_sigkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _sleeper()
+    monkeypatch.delattr(signal, 'SIGKILL')
+    try:
+        with (
+            ui.capture(lambda _line: None, lambda: True),
+            tableau.close_on_stop(),
+        ):
+            tableau.launch_browser(cast('Any', _Launcher(proc.pid)), headless=True)
+            assert proc.wait(timeout=3) == -signal.SIGTERM
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_cancel_kills_a_real_browser_mid_call() -> None:
+    stop = {'on': False}
+    with (
+        sync_playwright() as pw,
+        ui.capture(lambda _line: None, lambda: stop['on']),
+        tableau.close_on_stop(),
+    ):
+        try:
+            browser = tableau.launch_browser(pw, headless=True)
+        except SystemExit:
+            pytest.skip('no Chrome, Edge, or Playwright Chromium installed')
+        page = browser.new_page()
+        threading.Timer(0.5, lambda: stop.update(on=True)).start()
+        started = time.monotonic()
+        with pytest.raises(PlaywrightError, match='closed'):
+            page.wait_for_timeout(30_000)
+        assert time.monotonic() - started < 5
+        browser.close()
 
 
 def test_home_lists_sites_and_jobs_or_says_there_are_none(
