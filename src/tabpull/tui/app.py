@@ -257,8 +257,7 @@ class HomeScreen(Screen[None]):
 @dataclass
 class _CachedView:
     key: tuple[str, str]
-    info: ViewInfo | None = None
-    error: str | None = None
+    info: ViewInfo
 
 
 class JobScreen(Screen[None]):
@@ -486,24 +485,15 @@ class JobScreen(Screen[None]):
         key = (self.job.site, self.job.view)
         cached = self._cached_view
         if cached is not None and cached.key == key:
-            self._open_cached(kind, row, cached)
+            self._open_catalog(kind, row, cached.info)
             return
         self._read_catalog(kind, row, key)
-
-    def _open_cached(self, kind: str, row: int | None, cached: _CachedView) -> None:
-        info = cached.info
-        if cached.error is not None or info is None:
-            self.notify(cached.error or '', severity='error')
-            self._typed_fallback(kind, row)
-            return
-        self._open_catalog(kind, row, info)
 
     def _read_catalog(self, kind: str, row: int | None, key: tuple[str, str]) -> None:
         view = key[1]
         try:
             settings = load_site(key[0])
         except (UnknownSiteError, MissingSettingsError, ValueError) as exc:
-            self._cached_view = _CachedView(key, error=str(exc))
             self.notify(str(exc), severity='error')
             self._typed_fallback(kind, row)
             return
@@ -513,11 +503,10 @@ class JobScreen(Screen[None]):
                 return read_view(browser_session(playwright, settings), settings, view)
 
         def opened(info: ViewInfo) -> None:
-            self._cached_view = _CachedView(key, info=info)
+            self._cached_view = _CachedView(key, info)
             self._open_catalog(kind, row, info)
 
         def failed(message: str) -> None:
-            self._cached_view = _CachedView(key, error=message)
             self.notify(message, severity='error', timeout=10)
             self._typed_fallback(kind, row)
 

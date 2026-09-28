@@ -1557,7 +1557,7 @@ def test_parameters_edit_in_place_append_live_current_and_refuse_a_set_name(
     _drive(jobs_file, steps)
 
 
-def test_failed_view_read_opens_a_blank_filter_form_until_the_view_changes(
+def test_failed_view_read_opens_a_blank_filter_form_and_retries_next_time(
     jobs_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     notes = _notes(monkeypatch)
@@ -1583,18 +1583,11 @@ def test_failed_view_read_opens_a_blank_filter_form_until_the_view_changes(
         assert opened == [1]
 
         await pilot.press('escape', 'n')
+        await _until(pilot, lambda: len(seen) == 2)
         await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
-        assert not isinstance(tui.screen, TaskScreen)
-        assert seen == ['Sales/Overview']
-        assert opened == [1]
-        assert notes == [login, login]
-
-        await pilot.press('escape', 'v')
-        tui.screen.query_one('#value', Input).value = 'Sales/Other'
-        await pilot.press('ctrl+s', 'n')
-        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
-        assert seen == ['Sales/Overview', 'Sales/Other']
+        assert seen == ['Sales/Overview', 'Sales/Overview']
         assert opened == [1, 1]
+        assert notes == [login, login]
 
     _drive(jobs_file, steps)
 
@@ -1754,8 +1747,9 @@ def test_failed_sheet_open_uses_the_typed_sheets_form(
         assert seen == ['Sales/Overview']
 
         await pilot.press('escape', 's')
+        await _until(pilot, lambda: len(seen) == 2)
         await _until(pilot, lambda: isinstance(tui.screen, SheetsForm))
-        assert seen == ['Sales/Overview']
+        assert seen == ['Sales/Overview', 'Sales/Overview']
         assert notes == [login, login]
 
     _drive(jobs_file, steps)
