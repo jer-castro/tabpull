@@ -1169,6 +1169,12 @@ def _sheet_rows(screen: Widget) -> list[tuple[str, str]]:
     return rows
 
 
+def _rendered_option_lines(screen: Widget) -> list[str]:
+    widget = screen.query_one(SelectionList)
+    widget.render_lines(widget.content_region)
+    return [widget.render_line(index).text for index in range(widget.option_count)]
+
+
 def _fake_settings() -> tableau.Settings:
     return tableau.Settings(
         server='https://tableau.example',
@@ -1284,7 +1290,6 @@ def test_n_edits_a_saved_filter_appends_an_unsaved_one_and_keeps_other_rows(
         assert _prompts(tui.screen) == [
             f'{_MARK} Region  on Totals  = West',
             'Ship Mode  on Totals',
-            'Type a field name…',
             'Done',
         ]
         await _choose(pilot, f'{_MARK} Region  on Totals  = West')
@@ -1359,7 +1364,6 @@ def test_c_refuses_a_saved_field_and_replaces_a_row_with_the_live_default(
         assert _prompts(tui.screen) == [
             f'{_MARK} Category  on Totals  = Furniture',
             'Ship Mode  on Totals',
-            'Type a field name…',
         ]
         await _choose(pilot, f'{_MARK} Category  on Totals  = Furniture')
         await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
@@ -1466,7 +1470,6 @@ def test_parameters_edit_in_place_append_live_current_and_refuse_a_set_name(
             f'{_MARK} Top N  = 10',
             f'{_MARK} Profit Bin Size  = 5',
             'Bonus',
-            'Type a parameter name…',
             'Done',
         ]
         await _choose(pilot, f'{_MARK} Top N  = 10')
@@ -1495,7 +1498,6 @@ def test_parameters_edit_in_place_append_live_current_and_refuse_a_set_name(
         assert _prompts(tui.screen) == [
             f'{_MARK} Profit Bin Size  = 5',
             f'{_MARK} Bonus  = 3',
-            'Type a parameter name…',
         ]
         await _choose(pilot, f'{_MARK} Profit Bin Size  = 5')
         await _until(pilot, lambda: isinstance(tui.screen, ParamForm))
@@ -1627,6 +1629,44 @@ def test_s_ticks_saved_sheets_including_one_missing_from_the_view(
         await _until(pilot, lambda: isinstance(tui.screen, JobScreen))
         assert load_jobs(jobs_file)[0].sheets == ['Totals', 'Gone', 'Detail']
         assert seen == ['Sales/Overview']
+
+    _drive(jobs_file, steps)
+
+
+def test_sheet_checklist_shows_bracketed_names_literally(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_daily(
+        jobs_file,
+        Job(
+            'daily',
+            'Sales/Overview',
+            ['Overview [copy]', 'Overview', 'Sheet [old]'],
+            'finance',
+            [],
+            {},
+        ),
+    )
+    info = _view(
+        [('Overview', []), ('Overview [copy]', []), ('Map [hidden]', [])],
+        [],
+    )
+    _patch_view(monkeypatch, info)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 's')
+        await _until(pilot, lambda: isinstance(tui.screen, ChecksForm))
+        lines = _rendered_option_lines(tui.screen)
+        assert 'Overview [copy]' in lines[0]
+        assert 'Overview' in lines[1]
+        assert '[copy]' not in lines[1]
+        assert 'Sheet [old] (not on the live view)' in lines[2]
+        assert 'Map [hidden]' in lines[3]
+        checks = tui.screen.query_one(SelectionList)
+        checks.highlighted = 0
+        await pilot.press('space', 'ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, JobScreen))
+        assert load_jobs(jobs_file)[0].sheets == ['Overview', 'Sheet [old]']
 
     _drive(jobs_file, steps)
 

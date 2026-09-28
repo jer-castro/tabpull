@@ -6,6 +6,7 @@ from playwright.sync_api import sync_playwright
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import (
@@ -416,7 +417,11 @@ class ChecksForm(Form[list[str]]):
         suffixes, ticked = self._label_suffix, self._ticked
         yield SelectionList[str](
             *(
-                (f'{name}{suffixes.get(name, "")}', name, name in ticked)
+                (
+                    Content(f'{name}{suffixes.get(name, "")}'),
+                    name,
+                    name in ticked,
+                )
                 for name in self._options
             ),
             id='checks',

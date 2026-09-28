@@ -76,7 +76,6 @@ DataTable { height: auto; max-height: 50%; }
 """
 )
 _MARK = '●'
-_TYPE_ROW = 'type'
 _MISSING_SHEET = ' (not on the live view)'
 
 
@@ -573,7 +572,6 @@ class JobScreen(Screen[None]):
                 saved = self.job.filters[match]
                 label = f'{_MARK} {label}  = {saved.shown}'
             options.append((label, str(index)))
-        options.append(('Type a field name…', _TYPE_ROW))
         return options
 
     def _open_filter_catalog(self, kind: str, row: int | None, info: ViewInfo) -> None:
@@ -599,9 +597,6 @@ class JobScreen(Screen[None]):
         )
 
     def _choose_new_filter(self, listed: list[ListedFilter], value: str) -> None:
-        if value == _TYPE_ROW:
-            self._filter_form(None)
-            return
         raw = listed[int(value)]
         match = self._matching_filter(raw)
         if match is None:
@@ -612,9 +607,6 @@ class JobScreen(Screen[None]):
     def _choose_changed_filter(
         self, listed: list[ListedFilter], row: int, value: str
     ) -> None:
-        if value == _TYPE_ROW:
-            self._filter_form(row)
-            return
         self._filter_form(row, filter_defaults(listed[int(value)]))
 
     def _param_label(self, name: str) -> str:
@@ -625,13 +617,11 @@ class JobScreen(Screen[None]):
     def _param_options(
         self, params: list[dict[str, str]], *, skip: str | None
     ) -> list[tuple[str, str]]:
-        options = [
+        return [
             (self._param_label(raw['name']), str(index))
             for index, raw in enumerate(params)
             if raw['name'] != skip
         ]
-        options.append(('Type a parameter name…', _TYPE_ROW))
-        return options
 
     def _open_param_catalog(self, kind: str, row: int | None, info: ViewInfo) -> None:
         params = info['params']
@@ -657,9 +647,6 @@ class JobScreen(Screen[None]):
         )
 
     def _choose_new_param(self, params: list[dict[str, str]], value: str) -> None:
-        if value == _TYPE_ROW:
-            self._param_form(None)
-            return
         raw = params[int(value)]
         names = list(self.job.params)
         if raw['name'] in self.job.params:
@@ -670,9 +657,6 @@ class JobScreen(Screen[None]):
     def _choose_changed_param(
         self, params: list[dict[str, str]], row: int, value: str
     ) -> None:
-        if value == _TYPE_ROW:
-            self._param_form(row)
-            return
         raw = params[int(value)]
         self._param_form(row, (raw['name'], raw['current']))
 
