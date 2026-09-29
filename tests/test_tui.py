@@ -16,20 +16,31 @@ import pytest
 from playwright.sync_api import Error as PlaywrightError
 from textual.pilot import Pilot
 from textual.widget import Widget
-from textual.widgets import Checkbox, DataTable, Input, RadioButton, Static, TextArea
+from textual.widgets import (
+    Checkbox,
+    DataTable,
+    Input,
+    OptionList,
+    RadioButton,
+    SelectionList,
+    Static,
+    TextArea,
+)
 
 import tabpull.tui.app as tui_app
 from tabpull import embed, tableau, ui
 from tabpull.jobs import Job, RangeFilter, ValuesFilter, load_jobs, save_jobs
 from tabpull.run import Report
-from tabpull.tui.app import HomeScreen, JobScreen, TabpullApp
+from tabpull.tui.app import _MARK, HomeScreen, JobScreen, TabpullApp
 from tabpull.tui.forms import (
     ChecksForm,
     ChoiceScreen,
     ConfirmScreen,
     FilterForm,
+    ParamForm,
     PickScreen,
     SetupForm,
+    SheetsForm,
     TaskScreen,
     TextForm,
 )
@@ -67,7 +78,39 @@ def _drive(
     asyncio.run(go())
 
 
-def test_home_lists_jobs_and_edits_a_filter_param_and_name(jobs_file: Path) -> None:
+def _block_view(monkeypatch: pytest.MonkeyPatch, *, site: bool = False) -> None:
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        msg = 'the job screen opened the view'
+        raise AssertionError(msg)
+
+    monkeypatch.setattr('tabpull.tui.app.read_view', refuse)
+    monkeypatch.setattr('tabpull.tui.app.sync_playwright', refuse)
+    monkeypatch.setattr('tabpull.tui.app.browser_session', refuse)
+    if site:
+        monkeypatch.setattr('tabpull.tui.app.load_site', refuse)
+
+
+def test_job_screen_names_change_field(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _block_view(monkeypatch)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter')
+        sections = [str(widget.render()) for widget in tui.screen.query('.section')]
+        assert sections == [
+            'Filters  (n new, c change field, e/enter edit, d delete)',
+            'Parameters  (n new, c change field, e/enter edit, d delete)',
+        ]
+
+    _drive(jobs_file, steps)
+
+
+def test_home_lists_jobs_and_edits_a_filter_param_and_name(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _block_view(monkeypatch)
+
     async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
         assert isinstance(tui.screen, HomeScreen)
         assert tui.screen.query_one('#jobs', DataTable).row_count == 2
@@ -127,8 +170,7 @@ def test_home_lists_jobs_and_edits_a_filter_param_and_name(jobs_file: Path) -> N
 
         await pilot.press('escape')
         assert isinstance(tui.screen, HomeScreen)
-        table = tui.screen.query_one('#jobs', DataTable)
-        assert table.get_row_at(0)[1] == 'daily-west'
+        assert tui.screen.query_one('#jobs', DataTable).get_row_at(0)[1] == 'daily-west'
 
     _drive(jobs_file, steps)
 
@@ -1086,6 +1128,631 @@ def test_second_q_returns_while_a_cancelled_search_is_blocked(tmp_path: Path) ->
         raise AssertionError(msg) from exc
     assert proc.returncode == 0, proc.stderr
     assert 'force-quit-returned' in proc.stdout
+
+
+def _plain(prompt: object) -> str:
+    plain = getattr(prompt, 'plain', None)
+    return plain if isinstance(plain, str) else str(prompt)
+
+
+def _prompts(screen: Widget) -> list[str]:
+    widget = screen.query_one(OptionList)
+    return [
+        _plain(widget.get_option_at_index(index).prompt)
+        for index in range(widget.option_count)
+    ]
+
+
+async def _choose(pilot: Pilot[None], prompt: str) -> None:
+    widget = pilot.app.screen.query_one(OptionList)
+    found = next(
+        (
+            index
+            for index in range(widget.option_count)
+            if _plain(widget.get_option_at_index(index).prompt) == prompt
+        ),
+        None,
+    )
+    if found is None:
+        raise AssertionError(prompt)
+    widget.highlighted = found
+    await pilot.pause()
+    await pilot.press('enter')
+
+
+def _sheet_rows(screen: Widget) -> list[tuple[str, str]]:
+    widget = screen.query_one(SelectionList)
+    rows: list[tuple[str, str]] = []
+    for index in range(widget.option_count):
+        option = widget.get_option_at_index(index)
+        rows.append((_plain(option.prompt), str(getattr(option, 'value', ''))))
+    return rows
+
+
+def _rendered_option_lines(screen: Widget) -> list[str]:
+    widget = screen.query_one(SelectionList)
+    widget.render_lines(widget.content_region)
+    return [widget.render_line(index).text for index in range(widget.option_count)]
+
+
+def _fake_settings() -> tableau.Settings:
+    return tableau.Settings(
+        server='https://tableau.example',
+        site='finance',
+        pat_name='tabpull',
+        name='finance',
+        auth_path=Path('auth.json'),
+        pat_secret='secret',  # noqa: S106
+    )
+
+
+def _view(
+    sheets: list[tuple[str, list[tuple[str, str, str]]]],
+    params: list[tuple[str, str]],
+) -> dict[str, object]:
+    return {
+        'sheets': [
+            {
+                'name': name,
+                'filters': [
+                    {'field': field, 'type': kind, 'current': current}
+                    for field, kind, current in filters
+                ],
+            }
+            for name, filters in sheets
+        ],
+        'params': [{'name': name, 'current': current} for name, current in params],
+    }
+
+
+def _patch_view(
+    monkeypatch: pytest.MonkeyPatch,
+    info: dict[str, object],
+    *,
+    fail: str | None = None,
+    hold: threading.Event | None = None,
+) -> tuple[list[str], list[int]]:
+    seen: list[str] = []
+    opened: list[int] = []
+
+    class _Opened:
+        def __enter__(self) -> object:
+            opened.append(1)
+            return object()
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def read_view(_context: object, _settings: object, view: str) -> dict[str, object]:
+        seen.append(view)
+        if hold is not None and len(seen) == 1 and not hold.wait(5):
+            msg = 'timed out waiting to open the view'
+            raise SystemExit(msg)
+        if fail is not None:
+            raise SystemExit(fail)
+        return info
+
+    monkeypatch.setattr('tabpull.tui.app.read_view', read_view)
+    monkeypatch.setattr('tabpull.tui.app.sync_playwright', _Opened)
+    monkeypatch.setattr('tabpull.tui.app.browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr('tabpull.tui.app.load_site', lambda _name: _fake_settings())
+    return seen, opened
+
+
+def _save_daily(jobs_file: Path, job: Job) -> None:
+    save_jobs(jobs_file, [job])
+
+
+def test_n_edits_a_saved_filter_appends_an_unsaved_one_and_keeps_other_rows(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_daily(
+        jobs_file,
+        Job(
+            'daily',
+            'Sales/Overview',
+            ['Totals', 'Detail'],
+            'finance',
+            [
+                ValuesFilter('Region', ['West'], 'Totals'),
+                ValuesFilter('Legacy', ['Keep'], 'Totals'),
+            ],
+            {'Top N': '10', 'Legacy Param': '1'},
+        ),
+    )
+    info = _view(
+        [
+            (
+                'Totals',
+                [
+                    ('Region', 'categorical', 'West'),
+                    ('Ship Mode', 'categorical', 'Standard'),
+                ],
+            )
+        ],
+        [('Top N', '99')],
+    )
+    hold = threading.Event()
+    seen, opened = _patch_view(monkeypatch, info, hold=hold)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 'e')
+        assert isinstance(tui.screen, FilterForm)
+        await pilot.press('escape')
+        assert seen == []
+
+        await pilot.press('n')
+        await _until(pilot, lambda: isinstance(tui.screen, TaskScreen))
+        assert isinstance(tui.screen, TaskScreen)
+        assert tui.screen.title_text == 'Opening Sales/Overview…'
+        hold.set()
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        assert _prompts(tui.screen) == [
+            f'{_MARK} Region  on Totals  = West',
+            'Ship Mode  on Totals',
+            'Done',
+        ]
+        await _choose(pilot, f'{_MARK} Region  on Totals  = West')
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        form = tui.screen
+        assert isinstance(form, FilterForm)
+        assert form.title_text == 'Edit filter Region'
+        assert form.query_one('#values', Input).value == 'West'
+        form.query_one('#values', Input).value = 'West|East'
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        await pilot.press('escape')
+        assert isinstance(tui.screen, JobScreen)
+
+        await pilot.press('n')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        assert seen == ['Sales/Overview']
+        assert opened == [1]
+        await _choose(pilot, 'Ship Mode  on Totals')
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        form = tui.screen
+        assert isinstance(form, FilterForm)
+        assert form.query_one('#field', Input).value == 'Ship Mode'
+        assert form.query_one('#sheet', Input).value == 'Totals'
+        assert form.query_one('#values', Input).value == 'Standard'
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+
+        job = load_jobs(jobs_file)[0]
+        assert job.filters == [
+            ValuesFilter('Region', ['West', 'East'], 'Totals'),
+            ValuesFilter('Legacy', ['Keep'], 'Totals'),
+            ValuesFilter('Ship Mode', ['Standard'], 'Totals'),
+        ]
+        assert job.params == {'Top N': '10', 'Legacy Param': '1'}
+        assert seen == ['Sales/Overview']
+
+    _drive(jobs_file, steps)
+
+
+def test_c_refuses_a_saved_field_and_replaces_a_row_with_the_live_default(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = [
+        ValuesFilter('Region', ['West'], 'Totals'),
+        ValuesFilter('Category', ['Furniture'], 'Totals'),
+    ]
+    _save_daily(
+        jobs_file,
+        Job('daily', 'Sales/Overview', ['Totals'], 'finance', list(original), {}),
+    )
+    info = _view(
+        [
+            (
+                'Totals',
+                [
+                    ('Region', 'categorical', 'West'),
+                    ('Category', 'categorical', 'Office'),
+                    ('Ship Mode', 'categorical', 'Standard'),
+                ],
+            )
+        ],
+        [],
+    )
+    seen, _opened = _patch_view(monkeypatch, info)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 'c')
+        await _until(pilot, lambda: isinstance(tui.screen, ChoiceScreen))
+        assert isinstance(tui.screen, ChoiceScreen)
+        assert tui.screen.title_text == 'Change field of Region'
+        assert _prompts(tui.screen) == [
+            f'{_MARK} Category  on Totals  = Furniture',
+            'Ship Mode  on Totals',
+        ]
+        await _choose(pilot, f'{_MARK} Category  on Totals  = Furniture')
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        form = tui.screen
+        assert isinstance(form, FilterForm)
+        assert form.query_one('#field', Input).value == 'Category'
+        assert form.query_one('#values', Input).value == 'Office'
+        await pilot.press('ctrl+s')
+        assert tui.screen is form
+        assert (
+            str(form.query_one('#error', Static).render())
+            == 'filter Category on Totals is already on this job; edit that row'
+        )
+        assert load_jobs(jobs_file)[0].filters == original
+
+        await pilot.press('escape', 'c')
+        await _until(pilot, lambda: isinstance(tui.screen, ChoiceScreen))
+        assert seen == ['Sales/Overview']
+        await _choose(pilot, 'Ship Mode  on Totals')
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, JobScreen))
+        assert load_jobs(jobs_file)[0].filters == [
+            ValuesFilter('Ship Mode', ['Standard'], 'Totals'),
+            ValuesFilter('Category', ['Furniture'], 'Totals'),
+        ]
+
+    _drive(jobs_file, steps)
+
+
+def test_c_on_a_later_duplicate_hides_its_own_field(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_daily(
+        jobs_file,
+        Job(
+            'daily',
+            'Sales/Overview',
+            ['Totals'],
+            'finance',
+            [
+                ValuesFilter('Region', ['West'], 'Totals'),
+                ValuesFilter('Region', ['East']),
+            ],
+            {},
+        ),
+    )
+    info = _view(
+        [
+            (
+                'Totals',
+                [
+                    ('Region', 'categorical', 'Central'),
+                    ('Ship Mode', 'categorical', 'Standard'),
+                ],
+            )
+        ],
+        [],
+    )
+    _patch_view(monkeypatch, info)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 'down', 'c')
+        await _until(pilot, lambda: isinstance(tui.screen, ChoiceScreen))
+        assert isinstance(tui.screen, ChoiceScreen)
+        assert tui.screen.title_text == 'Change field of Region'
+        assert _prompts(tui.screen) == ['Ship Mode  on Totals']
+
+    _drive(jobs_file, steps)
+
+
+def test_sheetless_saved_filter_matches_the_first_sheet(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_daily(
+        jobs_file,
+        Job(
+            'daily',
+            'Sales/Overview',
+            ['Totals', 'Detail'],
+            'finance',
+            [ValuesFilter('Region', ['West'])],
+            {},
+        ),
+    )
+    info = _view(
+        [
+            (
+                'Totals',
+                [('Region', 'categorical', 'Central')],
+            ),
+            (
+                'Detail',
+                [('Region', 'categorical', 'East')],
+            ),
+        ],
+        [],
+    )
+    _patch_view(monkeypatch, info)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 'n')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        assert _prompts(tui.screen)[0] == f'{_MARK} Region  on Totals  = West'
+        await _choose(pilot, f'{_MARK} Region  on Totals  = West')
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        form = tui.screen
+        assert isinstance(form, FilterForm)
+        assert not form.query_one('#sheet', Input).value
+        assert form.query_one('#values', Input).value == 'West'
+        form.query_one('#values', Input).value = 'East'
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        assert load_jobs(jobs_file)[0].filters == [ValuesFilter('Region', ['East'], '')]
+
+    _drive(jobs_file, steps)
+
+
+def test_parameters_edit_in_place_append_live_current_and_refuse_a_set_name(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_daily(
+        jobs_file,
+        Job(
+            'daily',
+            'Sales/Overview',
+            ['Totals'],
+            'finance',
+            [],
+            {'Top N': '10', 'Profit Bin Size': '5'},
+        ),
+    )
+    info = _view(
+        [('Totals', [])],
+        [('Top N', '99'), ('Profit Bin Size', '8'), ('Bonus', '3')],
+    )
+    seen, _opened = _patch_view(monkeypatch, info)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 'tab', 'n')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        assert isinstance(tui.screen, PickScreen)
+        assert tui.screen.title_text == 'Set a parameter'
+        assert _prompts(tui.screen) == [
+            f'{_MARK} Top N  = 10',
+            f'{_MARK} Profit Bin Size  = 5',
+            'Bonus',
+            'Done',
+        ]
+        await _choose(pilot, f'{_MARK} Top N  = 10')
+        await _until(pilot, lambda: isinstance(tui.screen, ParamForm))
+        form = tui.screen
+        assert isinstance(form, ParamForm)
+        assert form.title_text == 'Edit parameter Top N'
+        assert form.query_one('#value', Input).value == '10'
+        form.query_one('#value', Input).value = '25'
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        await pilot.press('escape', 'n')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        assert seen == ['Sales/Overview']
+        await _choose(pilot, 'Bonus')
+        await _until(pilot, lambda: isinstance(tui.screen, ParamForm))
+        form = tui.screen
+        assert isinstance(form, ParamForm)
+        assert form.title_text == 'Bonus'
+        assert form.query_one('#name', Input).value == 'Bonus'
+        assert form.query_one('#value', Input).value == '3'
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        await pilot.press('escape', 'c')
+        await _until(pilot, lambda: isinstance(tui.screen, ChoiceScreen))
+        assert _prompts(tui.screen) == [
+            f'{_MARK} Profit Bin Size  = 5',
+            f'{_MARK} Bonus  = 3',
+        ]
+        await _choose(pilot, f'{_MARK} Profit Bin Size  = 5')
+        await _until(pilot, lambda: isinstance(tui.screen, ParamForm))
+        form = tui.screen
+        assert isinstance(form, ParamForm)
+        assert form.query_one('#name', Input).value == 'Profit Bin Size'
+        await pilot.press('ctrl+s')
+        assert tui.screen is form
+        assert 'already set' in str(form.query_one('#error', Static).render())
+        assert load_jobs(jobs_file)[0].params == {
+            'Top N': '25',
+            'Profit Bin Size': '5',
+            'Bonus': '3',
+        }
+
+    _drive(jobs_file, steps)
+
+
+def test_failed_view_read_opens_a_blank_filter_form_and_retries_next_time(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = _notes(monkeypatch)
+    login = 'Run: tabpull login --site finance'
+    hold = threading.Event()
+    seen, opened = _patch_view(monkeypatch, _view([], []), fail=login, hold=hold)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter')
+        assert seen == []
+        await pilot.press('n')
+        await _until(pilot, lambda: isinstance(tui.screen, TaskScreen))
+        assert isinstance(tui.screen, TaskScreen)
+        assert tui.screen.title_text == 'Opening Sales/Overview…'
+        hold.set()
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        form = tui.screen
+        assert isinstance(form, FilterForm)
+        assert form.title_text == 'New filter'
+        assert not form.query_one('#field', Input).value
+        assert notes == [login]
+        assert seen == ['Sales/Overview']
+        assert opened == [1]
+
+        await pilot.press('escape', 'n')
+        await _until(pilot, lambda: len(seen) == 2)
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        assert seen == ['Sales/Overview', 'Sales/Overview']
+        assert opened == [1, 1]
+        assert notes == [login, login]
+
+    _drive(jobs_file, steps)
+
+
+def test_n_uses_the_typed_form_while_a_cancelled_open_is_still_stopping(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = _notes(monkeypatch)
+    hold = threading.Event()
+    seen, _opened = _patch_view(monkeypatch, _view([], []), hold=hold)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 'n')
+        await _until(pilot, lambda: isinstance(tui.screen, TaskScreen))
+        await pilot.press('escape')
+        await _until(pilot, lambda: isinstance(tui.screen, JobScreen))
+        await pilot.press('n')
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        form = tui.screen
+        assert isinstance(form, FilterForm)
+        assert form.title_text == 'New filter'
+        assert 'Still stopping the previous task…' in notes
+        assert seen == ['Sales/Overview']
+        hold.set()
+
+    _drive(jobs_file, steps)
+
+
+def test_identical_filter_rows_can_still_be_edited(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_daily(
+        jobs_file,
+        Job(
+            'daily',
+            'Sales/Overview',
+            ['Totals'],
+            'finance',
+            [
+                ValuesFilter('Region', ['West'], 'Totals'),
+                ValuesFilter('Region', ['West'], 'Totals'),
+            ],
+            {},
+        ),
+    )
+
+    _block_view(monkeypatch, site=True)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 'e')
+        assert isinstance(tui.screen, FilterForm)
+        tui.screen.query_one('#values', Input).value = 'East'
+        await pilot.press('ctrl+s')
+        assert load_jobs(jobs_file)[0].filters == [
+            ValuesFilter('Region', ['East'], 'Totals'),
+            ValuesFilter('Region', ['West'], 'Totals'),
+        ]
+
+    _drive(jobs_file, steps)
+
+
+def test_s_ticks_saved_sheets_including_one_missing_from_the_view(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_daily(
+        jobs_file,
+        Job(
+            'daily',
+            'Sales/Overview',
+            ['Totals', 'Gone', 'Detail'],
+            'finance',
+            [],
+            {},
+        ),
+    )
+    info = _view(
+        [('Detail', []), ('Totals', []), ('Extra', [])],
+        [],
+    )
+    seen, _opened = _patch_view(monkeypatch, info)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter')
+        assert seen == []
+        await pilot.press('s')
+        await _until(pilot, lambda: isinstance(tui.screen, ChecksForm))
+        assert isinstance(tui.screen, ChecksForm)
+        assert _sheet_rows(tui.screen) == [
+            ('Totals', 'Totals'),
+            ('Gone (not on the live view)', 'Gone'),
+            ('Detail', 'Detail'),
+            ('Extra', 'Extra'),
+        ]
+        checks = tui.screen.query_one(SelectionList)
+        assert list(checks.selected) == ['Totals', 'Gone', 'Detail']
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, JobScreen))
+        assert load_jobs(jobs_file)[0].sheets == ['Totals', 'Gone', 'Detail']
+        assert seen == ['Sales/Overview']
+
+    _drive(jobs_file, steps)
+
+
+def test_sheet_checklist_shows_bracketed_names_literally(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_daily(
+        jobs_file,
+        Job(
+            'daily',
+            'Sales/Overview',
+            ['Overview [copy]', 'Overview', 'Sheet [old]'],
+            'finance',
+            [],
+            {},
+        ),
+    )
+    info = _view(
+        [('Overview', []), ('Overview [copy]', []), ('Map [hidden]', [])],
+        [],
+    )
+    _patch_view(monkeypatch, info)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 's')
+        await _until(pilot, lambda: isinstance(tui.screen, ChecksForm))
+        lines = _rendered_option_lines(tui.screen)
+        assert 'Overview [copy]' in lines[0]
+        assert 'Overview' in lines[1]
+        assert '[copy]' not in lines[1]
+        assert 'Sheet [old] (not on the live view)' in lines[2]
+        assert 'Map [hidden]' in lines[3]
+        checks = tui.screen.query_one(SelectionList)
+        checks.highlighted = 0
+        await pilot.press('space', 'ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, JobScreen))
+        assert load_jobs(jobs_file)[0].sheets == ['Overview', 'Sheet [old]']
+
+    _drive(jobs_file, steps)
+
+
+def test_failed_sheet_open_uses_the_typed_sheets_form(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = _notes(monkeypatch)
+    login = 'Run: tabpull login --site finance'
+    seen, _opened = _patch_view(monkeypatch, _view([], []), fail=login)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 's')
+        await _until(pilot, lambda: isinstance(tui.screen, SheetsForm))
+        assert isinstance(tui.screen, SheetsForm)
+        assert tui.screen.query_one('#sheets', TextArea).text == 'Totals\nDetail'
+        labels = [str(widget.render()) for widget in tui.screen.query('Label')]
+        assert all('tabpull add' not in label for label in labels)
+        assert notes == [login]
+        assert seen == ['Sales/Overview']
+
+        await pilot.press('escape', 's')
+        await _until(pilot, lambda: len(seen) == 2)
+        await _until(pilot, lambda: isinstance(tui.screen, SheetsForm))
+        assert seen == ['Sales/Overview', 'Sales/Overview']
+        assert notes == [login, login]
+
+    _drive(jobs_file, steps)
 
 
 def _force_quit_child() -> None:

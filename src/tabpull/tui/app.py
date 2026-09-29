@@ -27,7 +27,7 @@ from tabpull.add import (
     view_path,
 )
 from tabpull.embed import ViewInfo
-from tabpull.filters import format_filter, resolved_filters
+from tabpull.filters import format_filter, resolved_filters, same_filter
 from tabpull.home import site_rows, sso_badge
 from tabpull.jobs import (
     Job,
@@ -76,6 +76,7 @@ DataTable { height: auto; max-height: 50%; }
 """
 )
 _MARK = '●'
+_MISSING_SHEET = ' (not on the live view)'
 
 
 def _load_error(path: Path) -> tuple[list[Job], str | None]:
@@ -253,6 +254,12 @@ class HomeScreen(Screen[None]):
         self.reload()
 
 
+@dataclass
+class _CachedView:
+    key: tuple[str, str]
+    info: ViewInfo
+
+
 class JobScreen(Screen[None]):
     app: 'TabpullApp'
 
@@ -260,6 +267,7 @@ class JobScreen(Screen[None]):
         Binding('escape', 'back', 'back'),
         Binding('enter,e', 'edit', 'edit', priority=True),
         Binding('n', 'new', 'new'),
+        Binding('c', 'change', 'change field'),
         Binding('d', 'delete', 'delete'),
         Binding('s', 'sheets', 'sheets'),
         Binding('N', 'rename', 'rename'),
@@ -271,13 +279,20 @@ class JobScreen(Screen[None]):
     def __init__(self, job: Job) -> None:
         super().__init__()
         self.job = job
+        self._cached_view: _CachedView | None = None
 
     @override
     def compose(self) -> ComposeResult:
         yield Static('', id='summary', classes='info')
-        yield Label('Filters  (n new, e/enter edit, d delete)', classes='section')
+        yield Label(
+            'Filters  (n new, c change field, e/enter edit, d delete)',
+            classes='section',
+        )
         yield DataTable(id='filters', cursor_type='row', zebra_stripes=True)
-        yield Label('Parameters  (n new, e/enter edit, d delete)', classes='section')
+        yield Label(
+            'Parameters  (n new, c change field, e/enter edit, d delete)',
+            classes='section',
+        )
         yield DataTable(id='params', cursor_type='row', zebra_stripes=True)
         yield Static('', id='status')
         yield Footer()
@@ -328,10 +343,17 @@ class JobScreen(Screen[None]):
     def on_data_table_row_selected(self, _event: DataTable.RowSelected) -> None:
         self.action_edit()
 
-    def _filter_form(self, index: int | None) -> None:
-        item = None if index is None else self.job.filters[index]
+    def _filter_form(
+        self,
+        index: int | None,
+        preset: ValuesFilter | RangeFilter | None = None,
+    ) -> None:
+        current = None if index is None else self.job.filters[index]
+        item = current if preset is None else preset
 
         def save(new: ValuesFilter | RangeFilter) -> None:
+            if index is not None:
+                self._reject_duplicate_filter(index, new)
             filters = list(self.job.filters)
             if index is None:
                 filters.append(new)
@@ -339,10 +361,38 @@ class JobScreen(Screen[None]):
                 filters[index] = new
             self.commit(replace(self.job, filters=filters))
 
-        title = 'New filter' if item is None else f'Edit filter {item.field}'
+        if preset is not None:
+            title = f'Filter {preset.field}'
+        elif current is None:
+            title = 'New filter'
+        else:
+            title = f'Edit filter {current.field}'
         self.app.push_screen(FilterForm(title, item, self.job.sheets[0], save))
 
-    def _param_form(self, index: int | None) -> None:
+    def _reject_duplicate_filter(
+        self, index: int, new: ValuesFilter | RangeFilter
+    ) -> None:
+        default = self.job.sheets[0]
+        original = self.job.filters[index]
+        new_sheet = new.sheet or default
+        same_row = new.field == original.field and new_sheet == (
+            original.sheet or default
+        )
+        if same_row:
+            return
+        for other_index, other in enumerate(self.job.filters):
+            if other_index == index:
+                continue
+            if other.field == new.field and (other.sheet or default) == new_sheet:
+                msg = (
+                    f'filter {new.field} on {new_sheet} is already on this job; '
+                    'edit that row'
+                )
+                raise JobError(msg)
+
+    def _param_form(
+        self, index: int | None, preset: tuple[str, str] | None = None
+    ) -> None:
         names = list(self.job.params)
         old = None if index is None else names[index]
 
@@ -359,9 +409,14 @@ class JobScreen(Screen[None]):
                 items.append((name, value))
             self.commit(replace(self.job, params=dict(items)))
 
-        value = '' if old is None else self.job.params[old]
-        title = 'New parameter' if old is None else f'Edit parameter {old}'
-        self.app.push_screen(ParamForm(title, old or '', value, save))
+        if preset is None:
+            value = '' if old is None else self.job.params[old]
+            name = old or ''
+            title = 'New parameter' if old is None else f'Edit parameter {old}'
+        else:
+            name, value = preset
+            title = name
+        self.app.push_screen(ParamForm(title, name, value, save))
 
     def action_edit(self) -> None:
         table = self._focused_table()
@@ -375,9 +430,16 @@ class JobScreen(Screen[None]):
     def action_new(self) -> None:
         table = self._focused_table()
         if table is not None and table.id == 'params':
-            self._param_form(None)
+            self._request_catalog('param-new', None)
         else:
-            self._filter_form(None)
+            self._request_catalog('filter-new', None)
+
+    def action_change(self) -> None:
+        table = self._focused_table()
+        if table is None or (row := _row(table)) is None:
+            return
+        kind = 'param-change' if table.id == 'params' else 'filter-change'
+        self._request_catalog(kind, row)
 
     def action_delete(self) -> None:
         table = self._focused_table()
@@ -405,11 +467,207 @@ class JobScreen(Screen[None]):
         self.app.push_screen(ConfirmScreen(f'Delete {label}?', delete))
 
     def action_sheets(self) -> None:
+        self._request_catalog('sheets', None)
+
+    def _save_sheets(self, sheets: list[str]) -> None:
+        self.commit(replace(self.job, sheets=sheets))
+
+    def _sheets_form(self) -> None:
         self.app.push_screen(
             SheetsForm(
                 f'Sheets for {self.job.name}',
                 list(self.job.sheets),
-                lambda sheets: self.commit(replace(self.job, sheets=sheets)),
+                self._save_sheets,
+            )
+        )
+
+    def _request_catalog(self, kind: str, row: int | None) -> None:
+        key = (self.job.site, self.job.view)
+        cached = self._cached_view
+        if cached is not None and cached.key == key:
+            self._open_catalog(kind, row, cached.info)
+            return
+        self._read_catalog(kind, row, key)
+
+    def _read_catalog(self, kind: str, row: int | None, key: tuple[str, str]) -> None:
+        view = key[1]
+        try:
+            settings = load_site(key[0])
+        except (UnknownSiteError, MissingSettingsError, ValueError) as exc:
+            self.notify(str(exc), severity='error')
+            self._typed_fallback(kind, row)
+            return
+
+        def work() -> ViewInfo:
+            with sync_playwright() as playwright:
+                return read_view(browser_session(playwright, settings), settings, view)
+
+        def opened(info: ViewInfo) -> None:
+            self._cached_view = _CachedView(key, info)
+            self._open_catalog(kind, row, info)
+
+        def failed(message: str) -> None:
+            self.notify(message, severity='error', timeout=10)
+            self._typed_fallback(kind, row)
+
+        started = self.app.start_task(
+            TaskScreen(
+                f'Opening {view}…',
+                work,
+                opened,
+                failed,
+                on_cancel=lambda: self.notify('Cancelled.', severity='warning'),
+            )
+        )
+        if not started:
+            self._typed_fallback(kind, row)
+
+    def _typed_fallback(self, kind: str, row: int | None) -> None:
+        if kind == 'sheets':
+            self._sheets_form()
+        elif kind == 'filter-new':
+            self._filter_form(None)
+        elif kind == 'filter-change' and row is not None:
+            self._filter_form(row)
+        elif kind == 'param-new':
+            self._param_form(None)
+        elif kind == 'param-change' and row is not None:
+            self._param_form(row)
+
+    def _open_catalog(self, kind: str, row: int | None, info: ViewInfo) -> None:
+        if kind == 'sheets':
+            self._open_sheet_catalog(info)
+        elif kind.startswith('filter'):
+            self._open_filter_catalog(kind, row, info)
+        else:
+            self._open_param_catalog(kind, row, info)
+
+    def _is_filter(
+        self, raw: ListedFilter, existing: ValuesFilter | RangeFilter
+    ) -> bool:
+        probe = ValuesFilter(raw['field'], [], raw['sheet'])
+        return same_filter(probe, existing, self.job.sheets[0])
+
+    def _matching_filter(self, raw: ListedFilter) -> int | None:
+        return next(
+            (i for i, f in enumerate(self.job.filters) if self._is_filter(raw, f)),
+            None,
+        )
+
+    def _filter_options(
+        self, listed: list[ListedFilter], *, skip: int | None
+    ) -> list[tuple[str, str]]:
+        options: list[tuple[str, str]] = []
+        for index, raw in enumerate(listed):
+            if skip is not None and self._is_filter(raw, self.job.filters[skip]):
+                continue
+            match = self._matching_filter(raw)
+            label = f'{raw["field"]}  on {raw["sheet"]}'
+            if match is not None:
+                saved = self.job.filters[match]
+                label = f'{_MARK} {label}  = {saved.shown}'
+            options.append((label, str(index)))
+        return options
+
+    def _open_filter_catalog(self, kind: str, row: int | None, info: ViewInfo) -> None:
+        listed = listed_filters(info['sheets'], self.job.sheets)
+        if kind == 'filter-new':
+            self.app.push_screen(
+                PickScreen(
+                    'Add a filter',
+                    self._filter_options(listed, skip=None),
+                    lambda value: self._choose_new_filter(listed, value),
+                    lambda: None,
+                )
+            )
+            return
+        if row is None:
+            return
+        self.app.push_screen(
+            ChoiceScreen(
+                f'Change field of {self.job.filters[row].field}',
+                self._filter_options(listed, skip=row),
+                lambda value: self._choose_changed_filter(listed, row, value),
+            )
+        )
+
+    def _choose_new_filter(self, listed: list[ListedFilter], value: str) -> None:
+        raw = listed[int(value)]
+        match = self._matching_filter(raw)
+        if match is None:
+            self._filter_form(None, filter_defaults(raw))
+            return
+        self._filter_form(match)
+
+    def _choose_changed_filter(
+        self, listed: list[ListedFilter], row: int, value: str
+    ) -> None:
+        self._filter_form(row, filter_defaults(listed[int(value)]))
+
+    def _param_label(self, name: str) -> str:
+        if name in self.job.params:
+            return f'{_MARK} {name}  = {self.job.params[name]}'
+        return name
+
+    def _param_options(
+        self, params: list[dict[str, str]], *, skip: str | None
+    ) -> list[tuple[str, str]]:
+        return [
+            (self._param_label(raw['name']), str(index))
+            for index, raw in enumerate(params)
+            if raw['name'] != skip
+        ]
+
+    def _open_param_catalog(self, kind: str, row: int | None, info: ViewInfo) -> None:
+        params = info['params']
+        if kind == 'param-new':
+            self.app.push_screen(
+                PickScreen(
+                    'Set a parameter',
+                    self._param_options(params, skip=None),
+                    lambda value: self._choose_new_param(params, value),
+                    lambda: None,
+                )
+            )
+            return
+        if row is None:
+            return
+        current = list(self.job.params)[row]
+        self.app.push_screen(
+            ChoiceScreen(
+                f'Change field of {current}',
+                self._param_options(params, skip=current),
+                lambda value: self._choose_changed_param(params, row, value),
+            )
+        )
+
+    def _choose_new_param(self, params: list[dict[str, str]], value: str) -> None:
+        raw = params[int(value)]
+        names = list(self.job.params)
+        if raw['name'] in self.job.params:
+            self._param_form(names.index(raw['name']))
+            return
+        self._param_form(None, (raw['name'], raw['current']))
+
+    def _choose_changed_param(
+        self, params: list[dict[str, str]], row: int, value: str
+    ) -> None:
+        raw = params[int(value)]
+        self._param_form(row, (raw['name'], raw['current']))
+
+    def _open_sheet_catalog(self, info: ViewInfo) -> None:
+        live = [sheet['name'] for sheet in info['sheets']]
+        present = set(live)
+        saved = list(self.job.sheets)
+        options = [*saved, *[name for name in live if name not in set(saved)]]
+        suffix = {name: _MISSING_SHEET for name in saved if name not in present}
+        self.app.push_screen(
+            ChecksForm(
+                f'Sheets for {self.job.name}',
+                options,
+                self._save_sheets,
+                ticked=set(saved),
+                label_suffix=suffix,
             )
         )
 
@@ -491,11 +749,12 @@ class TabpullApp(App[None]):
     def release_task(self, key: int) -> None:
         self._tasks.discard(key)
 
-    def start_task[T](self, screen: TaskScreen[T]) -> None:
+    def start_task[T](self, screen: TaskScreen[T]) -> bool:
         if self._tasks:
             self.notify('Still stopping the previous task…', severity='warning')
-            return
+            return False
         self.push_screen(screen)
+        return True
 
     def action_help(self) -> None:
         if self.screen.query('HelpPanel'):
