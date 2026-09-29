@@ -145,7 +145,7 @@ def test_bare_tabpull_opens_the_tui_only_at_a_terminal(
 
 def test_make_filter_builds_and_validates_values_and_ranges() -> None:
     assert make_filter(' Region ', 'A', values='West| Central') == ValuesFilter(
-        'Region', ['West', 'Central'], 'A'
+        ' Region ', ['West', 'Central'], 'A'
     )
     assert make_filter('Order Date', '', low=' 9/1/2026 ', high='') == RangeFilter(
         'Order Date', '', '9/1/2026', None

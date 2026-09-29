@@ -354,6 +354,94 @@ def test_export_applies_a_blank_filter_to_the_first_sheet_only(
     assert 'pat-value' not in note
 
 
+def test_spaced_filter_name_survives_save_and_the_run_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    raw = tmp_path / 'download.csv'
+    raw.write_text('a\n1\n', encoding='utf-8')
+    seen: dict[str, Any] = {}
+
+    class Download:
+        def path(self) -> str:
+            return str(raw)
+
+    class Expect:
+        value = Download()
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class Page:
+        def evaluate(self, script: str, arg: object = None) -> None:
+            if script == embed.APPLY_JS:
+                seen['apply'] = arg
+
+        def expect_download(self, timeout: int) -> Expect:
+            return Expect()
+
+        def close(self) -> None:
+            return None
+
+    padded = parse_filter_spec('Ship Mode = West | Central ')
+    assert padded == ValuesFilter('Ship Mode ', ['West', 'Central'], '')
+    item = parse_filter_spec('Ship Mode =First Class @B Real Sheet')
+    leading = parse_filter_spec(' Order Date=2026-09-01..2026-09-25 @Totals')
+    assert item == ValuesFilter('Ship Mode ', ['First Class'], 'B Real Sheet')
+    assert leading == RangeFilter(' Order Date', 'Totals', '2026-09-01', '2026-09-25')
+    assert parse_filter_spec('Ship Mode =First @ Totals').sheet == 'Totals'
+    assert parse_filter_spec('Order Date = 2026-09-01 ..') == RangeFilter(
+        'Order Date ', '', '2026-09-01', None
+    )
+
+    job = Job(
+        'daily',
+        'CrosstabMe/Dashboard1',
+        ['B Real Sheet', 'Totals'],
+        'demo',
+        [item, leading],
+    )
+    path = tmp_path / 'jobs.toml'
+    save_jobs(path, [job])
+    loaded = load_jobs(path)[0]
+    assert loaded.filters == [item, leading]
+    assert '"Ship Mode "' in path.read_text(encoding='utf-8')
+
+    monkeypatch.setattr(embed, 'open_view', lambda *_args, **_kwargs: Page())
+    embed.export_embed(
+        cast('Any', object()),
+        Settings(
+            'https://tableau.example',
+            'finance',
+            'tabpull',
+            'demo',
+            tmp_path / 'auth.json',
+            'pat-value',
+        ),
+        loaded,
+        tmp_path,
+    )
+
+    assert seen['apply'] == {
+        'filters': [
+            {
+                'field': 'Ship Mode ',
+                'values': ['First Class'],
+                'sheet': 'B Real Sheet',
+            },
+            {
+                'field': ' Order Date',
+                'sheet': 'Totals',
+                'min': '2026-09-01',
+                'max': '2026-09-25',
+            },
+        ],
+        'params': {},
+    }
+
+
 @pytest.mark.parametrize(
     ('download', 'csv_text'),
     [
