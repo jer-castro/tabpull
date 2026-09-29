@@ -443,6 +443,67 @@ def test_spaced_filter_name_survives_save_and_the_run_payload(
 
 
 @pytest.mark.parametrize(
+    ('download', 'csv_text'),
+    [
+        pytest.param(
+            'Region\tCity\nWest\tSão Paulo\n'.encode('utf-16'),
+            'Region,City\nWest,São Paulo\n',
+            id='tableau-utf16-tsv',
+        ),
+        pytest.param('\ufeffa,b\n1,2\n'.encode(), 'a,b\n1,2\n', id='utf8-with-bom'),
+    ],
+)
+def test_saved_crosstab_csv_starts_with_a_utf8_bom(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    download: bytes,
+    csv_text: str,
+) -> None:
+    raw = tmp_path / 'download.csv'
+    raw.write_bytes(download)
+
+    class Download:
+        def path(self) -> str:
+            return str(raw)
+
+    class Expect:
+        value = Download()
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class Page:
+        def evaluate(self, _script: str, _arg: object = None) -> None:
+            return None
+
+        def expect_download(self, timeout: int) -> Expect:
+            return Expect()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(embed, 'open_view', lambda *_args, **_kwargs: Page())
+    paths = embed.export_embed(
+        cast('Any', object()),
+        Settings(
+            'https://tableau.example',
+            'finance',
+            'tabpull',
+            'demo',
+            tmp_path / 'auth.json',
+            'pat-value',
+        ),
+        Job('daily', 'W/V', ['Totals'], 'demo'),
+        tmp_path,
+    )
+
+    assert paths[0].read_bytes() == csv_text.encode('utf-8-sig')
+
+
+@pytest.mark.parametrize(
     'raw',
     [
         {'name': 'j', 'site': 'demo', 'method': 'rest', 'view': 'W/V', 'sheets': ['A']},
