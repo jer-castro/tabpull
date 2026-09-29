@@ -1330,6 +1330,39 @@ def test_n_edits_a_saved_filter_appends_an_unsaved_one_and_keeps_other_rows(
     _drive(jobs_file, steps)
 
 
+def test_tui_keeps_a_tableau_filter_name_that_ends_with_a_space(
+    jobs_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    info = _view(
+        [('Totals', [('Ship Mode ', 'categorical', 'First Class')])],
+        [],
+    )
+    _patch_view(monkeypatch, info)
+
+    async def steps(tui: TabpullApp, pilot: Pilot[None]) -> None:
+        await pilot.press('enter', 'n')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        await _choose(pilot, 'Ship Mode   on Totals')
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        form = tui.screen
+        assert isinstance(form, FilterForm)
+        assert form.query_one('#field', Input).value == 'Ship Mode '
+        await pilot.press('ctrl+s')
+        await _until(pilot, lambda: isinstance(tui.screen, PickScreen))
+        await pilot.press('escape', 'down', 'e')
+        await _until(pilot, lambda: isinstance(tui.screen, FilterForm))
+        form = tui.screen
+        assert isinstance(form, FilterForm)
+        assert form.query_one('#field', Input).value == 'Ship Mode '
+        await pilot.press('ctrl+s')
+        assert load_jobs(jobs_file)[0].filters == [
+            ValuesFilter('Region', ['West'], 'Totals'),
+            ValuesFilter('Ship Mode ', ['First Class'], 'Totals'),
+        ]
+
+    _drive(jobs_file, steps)
+
+
 def test_c_refuses_a_saved_field_and_replaces_a_row_with_the_live_default(
     jobs_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
