@@ -117,9 +117,8 @@ def parse_filter_spec(spec: str) -> ValuesFilter | RangeFilter:
     if not sep:
         body, sheet = spec, ''
     field_name, eq, value = body.partition('=')
-    field_name = field_name.strip()
     sheet = sheet.strip()
-    if not eq or not field_name:
+    if not eq or not field_name.strip():
         msg = (
             f'filter {spec!r} should look like Field=a|b or Field=min..max, '
             'with an optional " @Sheet"'
@@ -145,8 +144,8 @@ def make_filter(
     low: str | None = None,
     high: str | None = None,
 ) -> ValuesFilter | RangeFilter:
-    field_name, sheet = field_name.strip(), sheet.strip()
-    if not field_name:
+    sheet = sheet.strip()
+    if not field_name.strip():
         msg = 'filter needs a field name'
         raise JobError(msg)
     if values is not None:
