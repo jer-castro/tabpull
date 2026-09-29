@@ -172,7 +172,7 @@ def _publish_csv(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(f'.{path.name}.partial')
     try:
-        partial.write_text(text, encoding='utf-8')
+        partial.write_text(text, encoding='utf-8-sig')
         if ui.stopped():
             msg = 'Cancelled.'
             raise JobError(msg)
