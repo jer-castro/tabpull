@@ -2171,7 +2171,7 @@ run._isolated_export(Job('daily', 'W/V', ['Totals'], 'demo'), '.', events, threa
 print(events.get_nowait())
 signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
 """
-    done = subprocess.run(  # noqa: S603
+    done = subprocess.run(
         [sys.executable, '-c', script],
         capture_output=True,
         text=True,

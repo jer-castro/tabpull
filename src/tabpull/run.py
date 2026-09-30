@@ -249,7 +249,6 @@ class _Stop(Protocol):
 class _Running:
     def __init__(self) -> None:
         self.cancel = threading.Event()
-        self.lock = threading.Lock()
 
 
 def _existing_dir(path: Path) -> Path:
