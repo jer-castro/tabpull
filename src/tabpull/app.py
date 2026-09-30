@@ -36,7 +36,7 @@ from tabpull.filters import (
 from tabpull.home import file_flags, show_home
 from tabpull.jobs import JobError, check_known, saved_jobs_or_exit
 from tabpull.remove import remove_jobs
-from tabpull.run import open_report, run_jobs
+from tabpull.run import open_report, run_jobs, shared_outputs
 from tabpull.tableau import (
     MissingSettingsError,
     Settings,
@@ -144,17 +144,30 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
         ]
     except JobError as e:
         raise SystemExit(str(e)) from e
+    if args.parallel > 1:
+        clashes = shared_outputs(selected, out_dir)
+        if clashes:
+            msg = (
+                'these jobs would write the same file at the same time:\n'
+                + '\n'.join(clashes)
+            )
+            raise SystemExit(msg)
     report = open_report(selected, out_dir)
-    failed = run_jobs(selected, out_dir, report)
+    try:
+        failed = run_jobs(selected, out_dir, report, parallel=args.parallel)
+    except JobError as e:
+        raise SystemExit(str(e)) from e
     filter_flags = [
         flag for spec in args.filter_specs or [] for flag in ('--filter', spec)
     ]
     param_flags = [flag for spec in args.params or [] for flag in ('--param', spec)]
+    parallel_flags = ['--parallel', str(args.parallel)] if args.parallel != 1 else []
     rerun = shlex.join(
         [
             'tabpull',
             'run',
             *file_flags(args),
+            *parallel_flags,
             *filter_flags,
             *param_flags,
             '--',
@@ -191,6 +204,18 @@ def _add_file_flags(
             default=default,
             help='output folder for this run (default: the current folder)',
         )
+
+
+def _at_least_one(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError as e:
+        msg = f'parallel must be an integer, not {text!r}'
+        raise argparse.ArgumentTypeError(msg) from e
+    if value < 1:
+        msg = 'parallel must be at least 1'
+        raise argparse.ArgumentTypeError(msg)
+    return value
 
 
 def _parser() -> tuple[_Parser, dict[str, _Parser]]:
@@ -282,6 +307,7 @@ examples:
   tabpull run daily-west --filter "Order Date=2026-09-01.." --out ~/reports
   tabpull run daily-west weekly-east --filter "Order Date=2026-09-01..2026-09-07"
   tabpull run daily-west --param "Top N=10"
+  tabpull run --parallel 4
 """,
     )
     run.add_argument('names', nargs='*', help='only these jobs (default: all)')
@@ -304,6 +330,12 @@ examples:
             'override Name=value for this run only '
             '(repeatable; applied to every selected job; jobs file unchanged)'
         ),
+    )
+    run.add_argument(
+        '--parallel',
+        type=_at_least_one,
+        default=1,
+        help='how many jobs to export at once (default: 1)',
     )
     _add_file_flags(run, out=True, default=argparse.SUPPRESS)
     login = commands.add_parser('login', help='refresh a site SSO browser session')
