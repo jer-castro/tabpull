@@ -124,7 +124,7 @@ def site_auth_path(name: str) -> Path:
     source = _legacy_data_dir() / 'auth'
     dest = config_dir() / 'auth'
     live = Path.home() / 'Library' / 'Application Support' / _APP / 'auth'
-    if source != live or dest == source:
+    if source != live:
         _move_dir(source, dest)
     return dest / f'{check_site_name(name)}.json'
 
