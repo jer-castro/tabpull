@@ -414,7 +414,12 @@ def _saved_context(browser: Browser, settings: Settings) -> BrowserContext | Non
     if not settings.auth_path.exists():
         return None
     context = browser.new_context(storage_state=settings.auth_path)
-    if session_valid(context, settings):
+    try:
+        valid = session_valid(context, settings)
+    except PlaywrightError:
+        context.close()
+        raise
+    if valid:
         return context
     context.close()
     return None

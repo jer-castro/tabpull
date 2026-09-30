@@ -2253,6 +2253,30 @@ def test_parallel_worker_asks_for_login_instead_of_opening_sign_in(
     assert signed == []
 
 
+def test_saved_session_closes_its_context_when_the_probe_fails(
+    tmp_path: Path,
+) -> None:
+    settings = _settings('demo', tmp_path)
+    settings.auth_path.write_text('{}', encoding='utf-8')
+    closed: list[bool] = []
+
+    class _Context:
+        def cookies(self, _url: str) -> list[dict[str, str]]:
+            msg = 'net::ERR_NAME_NOT_RESOLVED'
+            raise PlaywrightError(msg)
+
+        def close(self) -> None:
+            closed.append(True)
+
+    class _Browser:
+        def new_context(self, **_kwargs: object) -> _Context:
+            return _Context()
+
+    with pytest.raises(PlaywrightError, match='ERR_NAME_NOT_RESOLVED'):
+        tableau.saved_session(cast('Any', _Browser()), settings)
+    assert closed == [True]
+
+
 def test_parallel_worker_finishes_despite_a_pending_ctrl_c() -> None:
     script = """
 import os, queue, signal, threading
