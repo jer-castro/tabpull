@@ -36,7 +36,7 @@ from tabpull.filters import (
 from tabpull.home import file_flags, show_home
 from tabpull.jobs import JobError, check_known, saved_jobs_or_exit
 from tabpull.remove import remove_jobs
-from tabpull.run import open_report, run_jobs, shared_outputs
+from tabpull.run import open_report, run_jobs
 from tabpull.tableau import (
     MissingSettingsError,
     Settings,
@@ -144,14 +144,6 @@ def _cmd_run(args: argparse.Namespace, jobs_file: Path, out_dir: Path) -> int:
         ]
     except JobError as e:
         raise SystemExit(str(e)) from e
-    if args.parallel > 1:
-        clashes = shared_outputs(selected, out_dir)
-        if clashes:
-            msg = (
-                'these jobs would write the same file at the same time:\n'
-                + '\n'.join(clashes)
-            )
-            raise SystemExit(msg)
     report = open_report(selected, out_dir)
     try:
         failed = run_jobs(selected, out_dir, report, parallel=args.parallel)

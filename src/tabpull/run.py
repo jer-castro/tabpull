@@ -384,6 +384,7 @@ def _isolated_export(
     # Runs in its own process: its own sync driver, browser, and context.
     # The parent's stop event is polled from a thread so a blocked download
     # still dies with the browser instead of running on after Ctrl-C.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     stopped = {'on': False}
 
     def watch() -> None:
@@ -428,7 +429,7 @@ def _export_own_browser(
     def on_sheet(done: int, sheet: str) -> None:
         events.put(('sheet', done, sheet))
 
-    with _hold_sigint(), sync_playwright() as pw, close_on_stop():
+    with sync_playwright() as pw, close_on_stop():
         context = browser_session(pw, settings, sign_in=False)
         return export_embed(context, settings, job, out_dir, on_sheet=on_sheet)
 

@@ -1991,7 +1991,7 @@ sheets = ["Totals"]
         msg = 'exported'
         raise AssertionError(msg)
 
-    monkeypatch.setattr(app, 'run_jobs', exported)
+    monkeypatch.setattr(run, '_run_parallel', exported)
     out = tmp_path / 'out'
     with pytest.raises(SystemExit, match='same file') as exc:
         app.main(['--jobs', str(jobs), '--out', str(out), 'run', '--parallel', '2'])
@@ -2149,6 +2149,39 @@ def test_parallel_worker_asks_for_login_instead_of_opening_sign_in(
         run._export_own_browser(job, tmp_path, cast('Any', object()))
 
     assert signed == []
+
+
+def test_parallel_worker_finishes_despite_a_pending_ctrl_c() -> None:
+    script = """
+import os, queue, signal, threading
+from contextlib import nullcontext
+from pathlib import Path
+from tabpull import run
+from tabpull.jobs import Job
+
+run.load_site = lambda site: object()
+run.sync_playwright = lambda: nullcontext(object())
+run.close_on_stop = nullcontext
+run.browser_session = lambda *a, **k: object()
+run.export_embed = lambda *a, **k: [Path('daily.csv')]
+signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+os.kill(os.getpid(), signal.SIGINT)
+events = queue.Queue()
+run._isolated_export(Job('daily', 'W/V', ['Totals'], 'demo'), '.', events, threading.Event())
+print(events.get_nowait())
+signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
+"""
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, '-c', script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert "('ok', ['daily.csv'])" in done.stdout
+    assert 'Traceback' not in done.stderr
 
 
 def test_preflight_still_opens_sign_in_when_the_session_probe_fails(
