@@ -1,16 +1,13 @@
 import csv
 import multiprocessing
+import os
 import signal
+import tempfile
 import threading
 import time
+import unicodedata
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import (
-    FIRST_COMPLETED,
-    CancelledError,
-    Future,
-    ThreadPoolExecutor,
-    wait,
-)
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from functools import partial
 from multiprocessing.process import BaseProcess
@@ -255,16 +252,80 @@ class _Running:
         self.lock = threading.Lock()
 
 
+def _existing_dir(path: Path) -> Path:
+    current = path
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            return current
+        current = parent
+    return current if current.is_dir() else current.parent
+
+
+def _probe_same(directory: Path, name: str, other: str) -> bool | None:
+    if name == other:
+        return False
+    probe = directory / name
+    try:
+        probe.write_bytes(b'')
+    except OSError:
+        return None
+    try:
+        return (directory / other).exists()
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def _probe_directory(path: Path) -> Path:
+    anchor = _existing_dir(path)
+    temp = Path(tempfile.gettempdir())
+    try:
+        if (
+            temp.is_dir()
+            and anchor.exists()
+            and temp.stat().st_dev == anchor.stat().st_dev
+        ):
+            return temp
+    except OSError:
+        return anchor
+    return anchor
+
+
+def _volume_folds(path: Path) -> tuple[bool, bool]:
+    """Case and Unicode-normalization folding for the volume that holds path."""
+    directory = _probe_directory(path)
+    token = f'.tabpull-{os.getpid()}-{time.monotonic_ns()}'
+    case = _probe_same(directory, f'{token}-A', f'{token}-a')
+    composed = 'é'
+    decomposed = unicodedata.normalize('NFD', composed)
+    norm = _probe_same(directory, f'{token}-{composed}', f'{token}-{decomposed}')
+    ignores_case = os.name == 'nt' if case is None else case
+    return ignores_case, bool(norm)
+
+
+def _output_key(path: Path, *, ignores_case: bool, ignores_norm: bool) -> str:
+    text = os.path.normpath(os.fspath(path))
+    if ignores_norm:
+        text = unicodedata.normalize('NFC', text)
+    if ignores_case:
+        text = text.casefold()
+    return text
+
+
 def shared_outputs(jobs: Sequence[Job], out_dir: Path) -> list[str]:
     """CSV paths that two jobs in this run would write at the same time."""
-    owners: dict[Path, int] = {}
+    owners: dict[str, int] = {}
     clashes: list[str] = []
+    ignores_case, ignores_norm = _volume_folds(out_dir) if jobs else (False, False)
     for index, job in enumerate(jobs):
         for sheet in job.sheets:
             path = out_dir / slug(job.name) / f'{slug(sheet)}.csv'
-            previous = owners.get(path)
+            key = _output_key(
+                path, ignores_case=ignores_case, ignores_norm=ignores_norm
+            )
+            previous = owners.get(key)
             if previous is None:
-                owners[path] = index
+                owners[key] = index
                 continue
             if previous == index:
                 continue
@@ -368,7 +429,7 @@ def _export_own_browser(
         events.put(('sheet', done, sheet))
 
     with _hold_sigint(), sync_playwright() as pw, close_on_stop():
-        context = browser_session(pw, settings)
+        context = browser_session(pw, settings, sign_in=False)
         return export_embed(context, settings, job, out_dir, on_sheet=on_sheet)
 
 
@@ -577,26 +638,16 @@ def _cancel_pending(
     report_lock: threading.Lock,
     failed: set[int],
 ) -> None:
-    for future in list(pending):
+    for future in pending:
         job = futures[future]
         if not future.cancel():
             continue
         with report_lock:
             report.fail(job, 'Cancelled.')
         failed.add(id(job))
-    still = [future for future in futures if not future.done()]
-    if still:
-        wait(still, timeout=_CANCEL_JOIN_S)
-    for future, job in futures.items():
-        if not future.done():
-            with report_lock:
-                report.fail(job, 'Cancelled.')
-            failed.add(id(job))
-            continue
-        try:
+    for future in futures:
+        if not future.cancelled():
             future.result()
-        except CancelledError:
-            continue
 
 
 def run_jobs(

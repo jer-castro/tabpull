@@ -410,18 +410,31 @@ def sso_login(pw: Playwright, settings: Settings) -> None:
         ui.emit(f'Saved browser session to {settings.auth_path}')
 
 
-def browser_session(pw: Playwright, settings: Settings) -> BrowserContext:
+def _saved_context(browser: Browser, settings: Settings) -> BrowserContext | None:
+    if not settings.auth_path.exists():
+        return None
+    context = browser.new_context(storage_state=settings.auth_path)
+    if session_valid(context, settings):
+        return context
+    context.close()
+    return None
+
+
+def _expired_session(settings: Settings) -> SystemExit:
+    return SystemExit(
+        f'Tableau browser session for site {settings.name!r} is missing or expired. '
+        f'Run: tabpull login --site {settings.name}'
+    )
+
+
+def browser_session(
+    pw: Playwright, settings: Settings, *, sign_in: bool = True
+) -> BrowserContext:
     browser = launch_browser(pw, headless=True)
-    if settings.auth_path.exists():
-        context = browser.new_context(storage_state=settings.auth_path)
-        if session_valid(context, settings):
-            return context
-        context.close()
-    if not sys.stdin.isatty():
-        msg = (
-            f'Tableau browser session for site {settings.name!r} is missing or expired. '
-            f'Run: tabpull login --site {settings.name}'
-        )
-        raise SystemExit(msg)
-    sso_login(pw, settings)
-    return browser.new_context(storage_state=settings.auth_path)
+    saved = _saved_context(browser, settings)
+    if saved is not None:
+        return saved
+    if sign_in and sys.stdin.isatty():
+        sso_login(pw, settings)
+        return browser.new_context(storage_state=settings.auth_path)
+    raise _expired_session(settings)
