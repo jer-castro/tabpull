@@ -358,7 +358,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         case 'run':
             return _cmd_run(args, jobs_file, out_dir)
         case _ if ui.interactive():
-            from tabpull.tui import run_tui  # noqa: PLC0415
+            from tabpull.tui import run_tui
 
             run_tui(jobs_file, out_dir)
         case _:

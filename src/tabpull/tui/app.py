@@ -1058,19 +1058,19 @@ class _Add:
 
 
 class _TuiReport:
-    def live(self) -> AbstractContextManager[object]:  # noqa: PLR6301
+    def live(self) -> AbstractContextManager[object]:
         return nullcontext()
 
-    def sheet(self, job: Job, done: int, sheet: str) -> None:  # noqa: PLR6301
+    def sheet(self, job: Job, done: int, sheet: str) -> None:
         ui.emit(f'{job.name}: exporting {sheet} ({done + 1}/{len(job.sheets)})')
 
-    def ok(self, job: Job, paths: Sequence[Path]) -> None:  # noqa: PLR6301
+    def ok(self, job: Job, paths: Sequence[Path]) -> None:
         ui.emit(f'✓ {job.name}: {", ".join(map(str, paths))}')
 
-    def fail(self, job: Job, message: str) -> None:  # noqa: PLR6301
+    def fail(self, job: Job, message: str) -> None:
         ui.emit(f'✗ {job.name}: {message.partition("\n")[0]}')
 
-    def summary(self, ok: int, total: int, rerun: str | None) -> None:  # noqa: ARG002, PLR6301
+    def summary(self, ok: int, total: int, rerun: str | None) -> None:  # noqa: ARG002
         return None
 
 

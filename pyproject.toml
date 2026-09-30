@@ -8,11 +8,11 @@ license-files = ["LICENSE"]
 authors = [{ name = "Jeremy Castro", email = "160854558+jer-castro@users.noreply.github.com" }]
 requires-python = ">=3.12"
 dependencies = [
-    "playwright==1.63.0",
-    "questionary==2.1.1",
-    "rich==15.0.0",
-    "tableauserverclient==0.41",
-    "textual==8.2.8",
+  "playwright==1.63.0",
+  "questionary==2.1.1",
+  "rich==15.0.0",
+  "tableauserverclient==0.41",
+  "textual==8.2.8",
 ]
 
 [project.urls]
@@ -45,94 +45,47 @@ dev = ["pytest==9.1.1", "ruff==0.15.20", "ty==0.0.59"]
 
 [tool.ruff.lint]
 ignore = [
-  #### modules
-  # "ANN", # flake8-annotations
-  "ERA", # eradicate
-  "CPY", # flake8-copyright
-
-  #### specific rules
-  "D100", # undocumented-public-module
-  "D101", # undocumented-public-class
-  "D102", # undocumented-public-method
-  "D103", # undocumented-public-function
-  "D104", # undocumented-public-package
-  "D105", # undocumented-magic-method
-  "D106", # undocumented-public-nested-class
-  "D107", # undocumented-public-init
-  "E402", # module-import-not-at-top-of-file
-  "E501", # line-too-long
-  # "TRY003", # raise-vanilla-args
-  "FIX002", # line-contains-todo
-  "TD002", # missing-todo-author
-  "TD003", # missing-todo-link
-  # "Q000",    # bad-quotes-inline-string
-  # "W293",    # whitespace in blank lines
-  "T20", # print
-  "DOC201", # docstring-missing-returns
-  "DOC501", # docstring-missing-exception
-  "DOC402", # docstring-missing-yields
-  "COM812", # missing-trailing-comma
-  "PGH004", # blanket-noqa
+  "line-too-long",
+  "module-import-not-at-top-of-file",
+  "blanket-noqa",
+  "empty-docstring",
+  "implicit-namespace-package",
 ]
-select = ["ALL"]
-fixable = ["ALL"]
-unfixable = [
-  "D", # Don't fix docstyle from others
-  "F401", # Don't remove unused imports
+extend-select = [
+  "E",
+  "W",
+  "F",
+  "I",
+  "UP",
+  "B",
+  "SIM",
+  "C4",
+  "PIE",
+  "LOG",
+  "N",
+  "ARG",
+  "PT",
+  "PGH",
+  "PLE",
+  "implicit-namespace-package",
+  "asyncio-dangling-task",
+  "suspicious-eval-usage",
+  "subprocess-popen-with-shell-equals-true",
+  "hardcoded-sql-expression",
+  "unsafe-yaml-load",
+  "suspicious-pickle-usage",
+  "hashlib-insecure-hash-function",
+  "request-without-timeout",
 ]
-# Allow unused variables when underscore-prefixed.
-dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 preview = true
+unfixable = ["unused-import"]
 
 [tool.ruff.format]
 quote-style = "single"
 
-[tool.ruff.lint.pydocstyle]
-convention = "google"
-
-[tool.ruff.lint.pycodestyle]
-ignore-overlong-task-comments = true
-
-[tool.ruff.lint.flake8-quotes]
-inline-quotes = 'single'
-
 [tool.ruff.lint.per-file-ignores]
-"test_*.py" = [
-  "INP001", # Check for implicit namespace usage
-  "S101", # asserts allowed in tests...
-  "ARG", # Unused function args -> fixtures nevertheless are functionally relevant...
-  "FBT", # Don't care about booleans as positional arguments in tests, e.g. via @pytest.mark.parametrize()
-  "PLR2004", # Magic value used in comparison, ...
-  "S311", # Standard pseudo-random generators are not suitable for cryptographic purposes
-  "SLF001", # Checks for accesses on "private" class members
-  "T20", # Checks for prints
-  "A002", # Check for builtins shadowing
-  "N802", # Check for function names capitalization
-  "PLC2701", # Private name import
-  "PLR6301", # Method could be a function, class method, or static method
-]
-"tests/**/conftest.py" = [
-  "INP001", # Check for implicit namespace usage
-  "ARG", # Unused function args -> fixtures nevertheless are functionally relevant...
-  "N802", # Check for function names capitalization
-]
-"dags/*.py" = [
-  "F841", # Unused local variable
-]
-"scripts/**/*.py" = [
-  "INP001", # Check for implicit namespace usage
-]
-"hooks/**/*.py" = [
-  "INP001", # Check for implicit namespace usage
-]
-"__init__.py" = [
-  "PLC0415", # Top level import not at top of file
-]
-
-[tool.ruff.lint.pep8-naming]
-ignore-names = ["X", "Y"]
-# Allow Pydantic's `@validator` decorator to trigger class method treatment.
-classmethod-decorators = ["pydantic.validator", "pydantic.root_validator"]
+"test_*.py" = ["ARG", "implicit-namespace-package"]
+"tests/**/conftest.py" = ["ARG", "implicit-namespace-package"]
 
 [tool.ty.rules]
 missing-type-argument = "error"

@@ -12,6 +12,6 @@ def main() -> None:
     if any(sys.argv[1:] == [flag] for flag in VERSION_FLAGS):
         print(version())
         return
-    from tabpull.app import cli  # noqa: PLC0415
+    from tabpull.app import cli
 
     cli()

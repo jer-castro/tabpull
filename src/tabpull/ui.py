@@ -66,7 +66,7 @@ def interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def ask(question: questionary.Question) -> Any:  # noqa: ANN401 - questionary answers are untyped
+def ask(question: questionary.Question) -> Any:
     return question.unsafe_ask()
 
 

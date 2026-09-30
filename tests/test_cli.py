@@ -4,7 +4,7 @@ import re
 import runpy
 import shlex
 import signal
-import subprocess  # noqa: S404
+import subprocess
 import sys
 import threading
 import time
@@ -1395,7 +1395,7 @@ def test_cancel_during_export_reports_cancelled_without_a_csv(
         assert entered.wait(5)
         stop['on'] = True
 
-    def browser_session(pw: Any, _settings: object) -> object:  # noqa: ANN401
+    def browser_session(pw: Any, _settings: object) -> object:
         tableau.launch_browser(pw, headless=True)
         return object()
 
