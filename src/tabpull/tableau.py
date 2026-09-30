@@ -427,14 +427,20 @@ def _expired_session(settings: Settings) -> SystemExit:
     )
 
 
-def browser_session(
-    pw: Playwright, settings: Settings, *, sign_in: bool = True
-) -> BrowserContext:
+def saved_session(browser: Browser, settings: Settings) -> BrowserContext:
+    """A new context in browser from the site's saved session, never a sign-in window."""
+    saved = _saved_context(browser, settings)
+    if saved is None:
+        raise _expired_session(settings)
+    return saved
+
+
+def browser_session(pw: Playwright, settings: Settings) -> BrowserContext:
     browser = launch_browser(pw, headless=True)
     saved = _saved_context(browser, settings)
     if saved is not None:
         return saved
-    if sign_in and sys.stdin.isatty():
+    if sys.stdin.isatty():
         sso_login(pw, settings)
         return browser.new_context(storage_state=settings.auth_path)
     raise _expired_session(settings)

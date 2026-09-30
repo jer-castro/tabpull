@@ -7,17 +7,17 @@ import threading
 import time
 import unicodedata
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from functools import partial
 from multiprocessing.process import BaseProcess
 from multiprocessing.queues import Queue as ProcessQueue
 from pathlib import Path
-from queue import Empty
+from queue import Empty, Queue
 from typing import Protocol
 
+from playwright.sync_api import Browser, Playwright, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Playwright, sync_playwright
 from rich import box
 from rich.markup import escape
 from rich.panel import Panel
@@ -40,7 +40,9 @@ from tabpull.tableau import (
     UnknownSiteError,
     browser_session,
     close_on_stop,
+    launch_browser,
     load_site,
+    saved_session,
 )
 
 
@@ -374,13 +376,14 @@ def _open_site(pw: Playwright, site_name: str) -> str | None:
         return None
 
 
-def _isolated_export(
-    job: Job,
-    out_dir: str,
+def _serve(
+    jobs: ProcessQueue[Job | None],
     events: ProcessQueue[tuple[object, ...]],
     stop: _Stop,
+    out_dir: str,
 ) -> None:
-    # Runs in its own process: its own sync driver, browser, and context.
+    # Runs in its own process for the whole run: its own sync driver and one
+    # browser that exports every job this slot takes, each in a new context.
     # The parent's stop event is polled from a thread so a blocked download
     # still dies with the browser instead of running on after Ctrl-C.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -397,12 +400,51 @@ def _isolated_export(
     watcher.start()
     try:
         with ui.capture(lambda text: events.put(('note', text)), lambda: stopped['on']):
-            paths = _export_own_browser(job, Path(out_dir), events)
+            _serve_jobs(jobs, events, Path(out_dir))
+    finally:
+        stopped['on'] = True
+
+
+def _serve_jobs(
+    jobs: ProcessQueue[Job | None],
+    events: ProcessQueue[tuple[object, ...]],
+    out_dir: Path,
+) -> None:
+    with sync_playwright() as pw, close_on_stop():
+        browser: Browser | None = None
+
+        def open_browser() -> Browser:
+            nonlocal browser
+            if browser is None or not browser.is_connected():
+                browser = launch_browser(pw, headless=True)
+            return browser
+
+        while (job := jobs.get()) is not None:
+            events.put(_export_in(open_browser, job, out_dir, events))
+
+
+def _export_in(
+    open_browser: Callable[[], Browser],
+    job: Job,
+    out_dir: Path,
+    events: ProcessQueue[tuple[object, ...]],
+) -> tuple[object, ...]:
+    def on_sheet(done: int, sheet: str) -> None:
+        events.put(('sheet', done, sheet))
+
+    try:
+        settings = load_site(job.site)
+        context = saved_session(open_browser(), settings)
+        try:
+            paths = export_embed(context, settings, job, out_dir, on_sheet=on_sheet)
+        finally:
+            with suppress(PlaywrightError):
+                context.close()
     except SystemExit as e:
         message = (
             e.code if isinstance(e.code, str) else 'could not open a browser session'
         )
-        events.put(('err', message))
+        return ('err', message)
     except (
         JobError,
         PlaywrightError,
@@ -413,56 +455,52 @@ def _isolated_export(
         MissingSettingsError,
         ValueError,
     ) as e:
-        events.put(('err', 'Cancelled.' if stopped['on'] else str(e)))
-    else:
-        events.put(('ok', [str(path) for path in paths]))
-    finally:
-        stopped['on'] = True
+        return ('err', 'Cancelled.' if ui.stopped() else str(e))
+    return ('ok', [str(path) for path in paths])
 
 
-def _export_own_browser(
-    job: Job, out_dir: Path, events: ProcessQueue[tuple[object, ...]]
-) -> list[Path]:
-    settings = load_site(job.site)
+class _Worker:
+    """One parallel slot's process, kept for every job that slot takes."""
 
-    def on_sheet(done: int, sheet: str) -> None:
-        events.put(('sheet', done, sheet))
+    def __init__(self, out_dir: Path) -> None:
+        ctx = multiprocessing.get_context('spawn')
+        self.jobs: ProcessQueue[Job | None] = ctx.Queue()
+        self.events: ProcessQueue[tuple[object, ...]] = ctx.Queue()
+        self.stop = ctx.Event()
+        self.proc = ctx.Process(
+            target=_serve,
+            args=(self.jobs, self.events, self.stop, str(out_dir)),
+            name='tabpull-worker',
+        )
+        self.proc.start()
 
-    with sync_playwright() as pw, close_on_stop():
-        context = browser_session(pw, settings, sign_in=False)
-        return export_embed(context, settings, job, out_dir, on_sheet=on_sheet)
+    def alive(self) -> bool:
+        return self.proc.is_alive()
+
+    def export(
+        self, job: Job, on_sheet: Callable[[int, str], None], running: _Running
+    ) -> list[Path]:
+        self.jobs.put(job)
+        return _collect_export(self.proc, self.events, self.stop, on_sheet, running)
+
+    def close(self) -> None:
+        with suppress(OSError, ValueError):
+            self.jobs.put(None)
+        self.proc.join(timeout=_CANCEL_JOIN_S)
+        self.stop.set()
+        if self.proc.is_alive():
+            self.proc.terminate()
+            self.proc.join(timeout=_CANCEL_JOIN_S)
+        if self.proc.is_alive():
+            self.proc.kill()
+            self.proc.join(timeout=1)
+        for queue in (self.jobs, self.events):
+            queue.cancel_join_thread()
+            queue.close()
 
 
-def _export_job_isolated(
-    job: Job,
-    out_dir: Path,
-    on_sheet: Callable[[int, str], None],
-    running: _Running,
-) -> list[Path]:
-    if running.cancel.is_set():
-        msg = 'Cancelled.'
-        raise JobError(msg)
-    ctx = multiprocessing.get_context('spawn')
-    events = ctx.Queue()
-    stop = ctx.Event()
-    proc = ctx.Process(
-        target=_isolated_export,
-        args=(job, str(out_dir), events, stop),
-        name=f'tabpull-{slug(job.name)}',
-    )
-    proc.start()
-    try:
-        return _collect_export(proc, events, stop, on_sheet, running)
-    finally:
-        stop.set()
-        if proc.is_alive():
-            proc.terminate()
-            proc.join(timeout=_CANCEL_JOIN_S)
-        if proc.is_alive():
-            proc.kill()
-            proc.join(timeout=1)
-        events.cancel_join_thread()
-        events.close()
+def _start_worker(out_dir: Path) -> _Worker:
+    return _Worker(out_dir)
 
 
 class _ExportResult:
@@ -544,7 +582,6 @@ def _collect_export(
                 break
             continue
         _record_event(item, on_sheet, result)
-    proc.join(timeout=_CANCEL_JOIN_S)
     return _paths_or_error(proc, result, running)
 
 
@@ -601,62 +638,74 @@ def _export_ready(
     running = _Running()
     report_lock = threading.Lock()
     failed: set[int] = set()
+    todo: Queue[Job] = Queue()
+    for job in jobs:
+        todo.put(job)
 
     def note(text: str) -> None:
         with report_lock:
             print(text)
 
-    def work(job: Job) -> None:
+    def fail(job: Job, message: str) -> None:
+        with report_lock:
+            report.fail(job, message)
+            failed.add(id(job))
+
+    def work(worker: _Worker, job: Job) -> None:
         def on_sheet(done: int, sheet: str) -> None:
             with report_lock:
                 report.sheet(job, done, sheet)
 
         try:
             with ui.capture(note):
-                paths = _export_job_isolated(job, out_dir, on_sheet, running)
+                paths = worker.export(job, on_sheet, running)
         except (JobError, PlaywrightError, OSError, UnicodeError, csv.Error) as e:
-            message = 'Cancelled.' if running.cancel.is_set() else str(e)
-            with report_lock:
-                report.fail(job, message)
-                failed.add(id(job))
+            fail(job, 'Cancelled.' if running.cancel.is_set() else str(e))
         else:
             with report_lock:
                 report.ok(job, paths)
 
-    futures: dict[Future[None], Job] = {}
-    with ThreadPoolExecutor(max_workers=parallel) as pool:
-        futures = {pool.submit(work, job): job for job in jobs}
+    def slot() -> None:
+        worker: _Worker | None = None
+        try:
+            while not running.cancel.is_set():
+                try:
+                    job = todo.get_nowait()
+                except Empty:
+                    return
+                if worker is not None and not worker.alive():
+                    worker.close()
+                    worker = None
+                if worker is None:
+                    try:
+                        worker = _start_worker(out_dir)
+                    except OSError as e:
+                        fail(job, str(e))
+                        continue
+                work(worker, job)
+        finally:
+            if worker is not None:
+                worker.close()
+
+    slots = min(parallel, len(jobs))
+    with ThreadPoolExecutor(
+        max_workers=slots, thread_name_prefix='tabpull-slot'
+    ) as pool:
+        futures = [pool.submit(slot) for _ in range(slots)]
         pending = set(futures)
         while pending:
             if _interrupted():
                 running.cancel.set()
                 break
             _done, pending = wait(pending, timeout=_POLL_S, return_when=FIRST_COMPLETED)
-        if running.cancel.is_set():
-            _cancel_pending(futures, pending, report, report_lock, failed)
-        else:
-            for future in futures:
-                future.result()
-    return failed
-
-
-def _cancel_pending(
-    futures: dict[Future[None], Job],
-    pending: set[Future[None]],
-    report: Report,
-    report_lock: threading.Lock,
-    failed: set[int],
-) -> None:
-    for future in pending:
-        job = futures[future]
-        if not future.cancel():
-            continue
-        with report_lock:
-            report.fail(job, 'Cancelled.')
-        failed.add(id(job))
+    while True:
+        try:
+            fail(todo.get_nowait(), 'Cancelled.')
+        except Empty:
+            break
     for future in futures:
-        if not future.cancelled():
-            future.result()
+        future.result()
+    return failed
 
 
 def run_jobs(
