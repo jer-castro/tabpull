@@ -49,6 +49,7 @@ from tabpull.tui.forms import (
 @pytest.fixture
 def jobs_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'data'))
     path = tmp_path / 'jobs.toml'
     save_jobs(
         path,
@@ -1112,6 +1113,7 @@ def test_cancel_then_run_does_not_overlap(
 def test_second_q_returns_while_a_cancelled_search_is_blocked(tmp_path: Path) -> None:
     env = os.environ.copy()
     env['XDG_CONFIG_HOME'] = str(tmp_path / 'config')
+    env['XDG_DATA_HOME'] = str(tmp_path / 'data')
     env['TABPULL_QUIT_ROOT'] = str(tmp_path)
     env['PYTHONUNBUFFERED'] = '1'
     try:

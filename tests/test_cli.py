@@ -186,6 +186,51 @@ def test_linux_and_windows_auth_moves_into_config(
     assert (local / 'exports' / 'sheet.csv').read_text(encoding='utf-8') == 'e\n'
 
 
+def test_redirected_config_leaves_live_macos_auth_in_place(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.delenv('XDG_DATA_HOME', raising=False)
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg-config'))
+    monkeypatch.setattr(tableau.Path, 'home', lambda: home)
+    monkeypatch.setattr(tableau.sys, 'platform', 'darwin')
+    assert tableau.Path.home() == home
+    assert tableau.sys.platform == 'darwin'
+    live = home / 'Library' / 'Application Support' / 'tabpull' / 'auth'
+    live.mkdir(parents=True)
+    session = live / 'finance.json'
+    session.write_text('{}\n', encoding='utf-8')
+
+    tableau.site_auth_path('finance')
+
+    assert session.read_text(encoding='utf-8') == '{}\n'
+    assert not (tmp_path / 'xdg-config' / 'tabpull' / 'auth' / 'finance.json').exists()
+
+
+def test_redirected_data_auth_moves_into_redirected_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setattr(tableau.Path, 'home', lambda: home)
+    monkeypatch.setattr(tableau.sys, 'platform', 'darwin')
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg-config'))
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'xdg-data'))
+    source = tmp_path / 'xdg-data' / 'tabpull' / 'auth'
+    source.mkdir(parents=True)
+    (source / 'finance.json').write_text('{}\n', encoding='utf-8')
+    live = home / 'Library' / 'Application Support' / 'tabpull' / 'auth'
+    live.mkdir(parents=True)
+    (live / 'finance.json').write_text('stay\n', encoding='utf-8')
+
+    auth = tmp_path / 'xdg-config' / 'tabpull' / 'auth' / 'finance.json'
+    assert tableau.site_auth_path('finance') == auth
+    assert auth.read_text(encoding='utf-8') == '{}\n'
+    assert not source.exists()
+    assert (live / 'finance.json').read_text(encoding='utf-8') == 'stay\n'
+
+
 def test_sites_keep_separate_tokens_and_sessions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
