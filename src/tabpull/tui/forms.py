@@ -450,7 +450,7 @@ class TaskScreen[T](ModalScreen[None]):
         Binding('ctrl+c,escape', 'cancel', 'cancel', priority=True),
     ]
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         title: str,
         work: Callable[[], T],

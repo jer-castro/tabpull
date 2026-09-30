@@ -1,10 +1,11 @@
 import importlib.metadata
 import io
+import queue
 import re
 import runpy
 import shlex
 import signal
-import subprocess  # noqa: S404
+import subprocess
 import sys
 import threading
 import time
@@ -28,6 +29,7 @@ from tabpull.jobs import (
     job_to_toml,
     load_jobs,
     parse_job,
+    slug,
 )
 from tabpull.tableau import Settings, UnknownSiteError
 
@@ -1394,7 +1396,7 @@ def test_cancel_during_export_reports_cancelled_without_a_csv(
         assert entered.wait(5)
         stop['on'] = True
 
-    def browser_session(pw: Any, _settings: object) -> object:  # noqa: ANN401
+    def browser_session(pw: Any, _settings: object) -> object:
         tableau.launch_browser(pw, headless=True)
         return object()
 
@@ -1934,3 +1936,532 @@ def test_source_files_point_at_the_command(capsys: pytest.CaptureFixture[str]) -
             runpy.run_path(str(root / 'src' / 'tabpull' / name), run_name='__main__')
         assert exc.value.code == 2
         assert 'tabpull' in capsys.readouterr().err
+
+
+def test_run_help_documents_parallel_exports(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        app.main(['run', '--help'])
+    text = capsys.readouterr().out
+
+    assert exc.value.code == 0
+    assert '--parallel' in text
+    assert 'at once' in text
+    assert 'tabpull run --parallel 4' in text
+
+
+def test_parallel_must_be_at_least_one(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        app.main(['run', '--parallel', '0'])
+
+    assert exc.value.code == 2
+    assert 'at least 1' in capsys.readouterr().out
+
+    with pytest.raises(SystemExit) as exc_text:
+        app.main(['run', '--parallel', 'many'])
+    assert exc_text.value.code == 2
+    assert 'integer' in capsys.readouterr().out
+
+
+def test_parallel_refuses_jobs_that_would_write_the_same_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _xdg(monkeypatch, tmp_path)
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(
+        """
+[[job]]
+name = "daily"
+site = "one"
+view = "W/V"
+sheets = ["Totals"]
+
+[[job]]
+name = "daily"
+site = "one"
+view = "W/V"
+sheets = ["Totals"]
+""",
+        encoding='utf-8',
+    )
+
+    def exported(*_args: object, **_kwargs: object) -> list[str]:
+        msg = 'exported'
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(run, '_run_parallel', exported)
+    out = tmp_path / 'out'
+    with pytest.raises(SystemExit, match='same file') as exc:
+        app.main(['--jobs', str(jobs), '--out', str(out), 'run', '--parallel', '2'])
+
+    assert isinstance(exc.value.code, str)
+    assert 'Totals.csv' in exc.value.code
+    assert not out.exists()
+
+
+class _FakeWorker:
+    def __init__(
+        self,
+        out_dir: Path,
+        export: Callable[..., list[Path]],
+        *,
+        stays_alive: bool,
+    ) -> None:
+        self.out_dir = out_dir
+        self.run = export
+        self.stays_alive = stays_alive
+        self.jobs: list[str] = []
+        self.closed = False
+
+    def alive(self) -> bool:
+        return self.stays_alive
+
+    def export(
+        self, job: Job, on_sheet: Callable[[int, str], None], running: run._Running
+    ) -> list[Path]:
+        self.jobs.append(job.name)
+        return self.run(job, self.out_dir, on_sheet, running)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _fake_workers(
+    monkeypatch: pytest.MonkeyPatch,
+    export: Callable[..., list[Path]],
+    *,
+    stays_alive: bool = True,
+) -> list[_FakeWorker]:
+    started: list[_FakeWorker] = []
+    lock = threading.Lock()
+
+    def start(out_dir: Path) -> _FakeWorker:
+        worker = _FakeWorker(out_dir, export, stays_alive=stays_alive)
+        with lock:
+            started.append(worker)
+        return worker
+
+    monkeypatch.setattr(run, '_start_worker', start)
+    return started
+
+
+def test_parallel_jobs_overlap_and_one_failure_leaves_the_others(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    state = {'current': 0, 'peak': 0}
+    lock = threading.Lock()
+
+    def fake(
+        job: Job,
+        out_dir: Path,
+        on_sheet: Callable[[int, str], None],
+        _running: object,
+    ) -> list[Path]:
+        if job.name == 'bad':
+            time.sleep(0.15)
+            msg = 'nope'
+            raise JobError(msg)
+        with lock:
+            state['current'] += 1
+            state['peak'] = max(state['peak'], state['current'])
+        on_sheet(0, job.sheets[0])
+        time.sleep(0.3)
+        with lock:
+            state['current'] -= 1
+        path = out_dir / job.name / 'Totals.csv'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('ok\n', encoding='utf-8')
+        return [path]
+
+    monkeypatch.setattr(run, '_open_sessions', lambda _jobs: {})
+    workers = _fake_workers(monkeypatch, fake)
+    jobs = [
+        Job('a', 'W/V', ['Totals'], 'demo'),
+        Job('bad', 'W/V', ['Totals'], 'demo'),
+        Job('b', 'W/V', ['Totals'], 'demo'),
+    ]
+    report = _CancelReport()
+    started = time.monotonic()
+    failed = run.run_jobs(jobs, tmp_path, report, parallel=3)
+    elapsed = time.monotonic() - started
+
+    assert state['peak'] == 2
+    assert elapsed < 1
+    assert failed == ['bad']
+    assert dict(report.rows) == {'a': 'ok', 'bad': 'nope', 'b': 'ok'}
+    assert len(workers) == 3
+    assert all(worker.closed for worker in workers)
+
+
+def test_each_parallel_slot_reuses_one_worker_for_its_jobs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fake(
+        job: Job, out_dir: Path, _on_sheet: object, _running: object
+    ) -> list[Path]:
+        time.sleep(0.05)
+        return [out_dir / f'{job.name}.csv']
+
+    monkeypatch.setattr(run, '_open_sessions', lambda _jobs: {})
+    workers = _fake_workers(monkeypatch, fake)
+    names = [f'job{n}' for n in range(6)]
+    jobs = [Job(name, 'W/V', ['Totals'], 'demo') for name in names]
+
+    assert run.run_jobs(jobs, tmp_path, _CancelReport(), parallel=2) == []
+    assert len(workers) == 2
+    assert all(len(worker.jobs) > 1 for worker in workers)
+    assert sorted(name for worker in workers for name in worker.jobs) == names
+    assert all(worker.closed for worker in workers)
+
+
+def test_a_slot_replaces_a_worker_whose_process_died(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fake(
+        job: Job, out_dir: Path, _on_sheet: object, _running: object
+    ) -> list[Path]:
+        return [out_dir / f'{job.name}.csv']
+
+    monkeypatch.setattr(run, '_open_sessions', lambda _jobs: {})
+    workers = _fake_workers(monkeypatch, fake, stays_alive=False)
+    jobs = [Job(f'job{n}', 'W/V', ['Totals'], 'demo') for n in range(3)]
+    report = _CancelReport()
+
+    assert run.run_jobs(jobs, tmp_path, report, parallel=2) == []
+    assert len(workers) == 3
+    assert all(len(worker.jobs) == 1 for worker in workers)
+    assert all(worker.closed for worker in workers)
+    assert sorted(report.rows) == [('job0', 'ok'), ('job1', 'ok'), ('job2', 'ok')]
+
+
+def test_parallel_rerun_keeps_the_parallel_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _xdg(monkeypatch, tmp_path)
+    jobs = tmp_path / 'jobs.toml'
+    jobs.write_text(
+        """
+[[job]]
+name = "good"
+site = "one"
+view = "W/V"
+sheets = ["S"]
+
+[[job]]
+name = "bad"
+site = "one"
+view = "W/V"
+sheets = ["S"]
+""",
+        encoding='utf-8',
+    )
+
+    def fake(
+        job: Job, out_dir: Path, _on_sheet: object, _running: object
+    ) -> list[Path]:
+        if job.name == 'bad':
+            msg = 'boom'
+            raise JobError(msg)
+        path = out_dir / job.name / 'S.csv'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('ok\n', encoding='utf-8')
+        return [path]
+
+    monkeypatch.setattr(run, '_open_sessions', lambda _jobs: {})
+    _fake_workers(monkeypatch, fake)
+    assert (
+        app.main(['--jobs', str(jobs), '--out', 'reports', 'run', '--parallel', '2'])
+        == 1
+    )
+    rerun = capsys.readouterr().out.splitlines()[-1].split('rerun them: ', 1)[1]
+    assert '--parallel 2' in rerun
+    assert rerun.endswith('-- bad')
+
+
+def test_one_at_a_time_does_not_start_a_worker_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def worker(*_args: object, **_kwargs: object) -> object:
+        msg = 'worker'
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(run, '_start_worker', worker)
+    assert run.run_jobs([], tmp_path, _CancelReport(), parallel=1) == []
+
+
+def test_worker_process_reports_each_job_and_keeps_serving(tmp_path: Path) -> None:
+    worker = run._start_worker(tmp_path)
+    try:
+        pid = worker.proc.pid
+        for name in ('daily', 'weekly'):
+            job = Job(name, 'W/V', ['Totals'], 'missing-site')
+            with pytest.raises(JobError, match="No site named 'missing-site'"):
+                worker.export(job, lambda _done, _sheet: None, run._Running())
+            assert worker.alive()
+            assert worker.proc.pid == pid
+    finally:
+        worker.close()
+    assert not worker.alive()
+
+
+def _rejected_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[Settings, list[str]]:
+    settings = _settings('demo', tmp_path)
+    settings.auth_path.write_text('{}', encoding='utf-8')
+    signed: list[str] = []
+
+    class _Context:
+        def close(self) -> None:
+            return None
+
+    class _Browser:
+        def new_context(self, **_kwargs: object) -> _Context:
+            return _Context()
+
+    monkeypatch.setattr(run, 'load_site', lambda _name: settings)
+    monkeypatch.setattr(tableau, 'launch_browser', lambda _pw, *, headless: _Browser())
+    monkeypatch.setattr(tableau, 'session_valid', lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        tableau, 'sso_login', lambda _pw, site: signed.append(site.name)
+    )
+    monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+    return settings, signed
+
+
+def test_parallel_worker_asks_for_login_instead_of_opening_sign_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    settings, signed = _rejected_session(monkeypatch, tmp_path)
+    browser = tableau.launch_browser(cast('Any', object()), headless=True)
+    job = Job('daily', 'W/V', ['Totals'], 'demo')
+
+    def export() -> tuple[object, ...]:
+        return run._export_in(lambda: browser, job, tmp_path, cast('Any', object()))
+
+    kind, message = export()
+    assert kind == 'err'
+    assert 'tabpull login --site demo' in str(message)
+    settings.auth_path.unlink()
+    kind, message = export()
+    assert kind == 'err'
+    assert 'tabpull login --site demo' in str(message)
+
+    assert signed == []
+
+
+def test_saved_session_closes_its_context_when_the_probe_fails(
+    tmp_path: Path,
+) -> None:
+    settings = _settings('demo', tmp_path)
+    settings.auth_path.write_text('{}', encoding='utf-8')
+    closed: list[bool] = []
+
+    class _Context:
+        def cookies(self, _url: str) -> list[dict[str, str]]:
+            msg = 'net::ERR_NAME_NOT_RESOLVED'
+            raise PlaywrightError(msg)
+
+        def close(self) -> None:
+            closed.append(True)
+
+    class _Browser:
+        def new_context(self, **_kwargs: object) -> _Context:
+            return _Context()
+
+    with pytest.raises(PlaywrightError, match='ERR_NAME_NOT_RESOLVED'):
+        tableau.saved_session(cast('Any', _Browser()), settings)
+    assert closed == [True]
+
+
+def test_parallel_worker_finishes_despite_a_pending_ctrl_c() -> None:
+    script = """
+import os, queue, signal, threading
+from contextlib import nullcontext
+from pathlib import Path
+from tabpull import run
+from tabpull.jobs import Job
+
+class Context:
+    def close(self):
+        return None
+
+run.load_site = lambda site: object()
+run.sync_playwright = lambda: nullcontext(object())
+run.close_on_stop = nullcontext
+run.launch_browser = lambda *a, **k: object()
+run.saved_session = lambda *a, **k: Context()
+run.export_embed = lambda *a, **k: [Path('daily.csv')]
+signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+os.kill(os.getpid(), signal.SIGINT)
+jobs = queue.Queue()
+jobs.put(Job('daily', 'W/V', ['Totals'], 'demo'))
+jobs.put(None)
+events = queue.Queue()
+run._serve(jobs, events, threading.Event(), '.')
+print(events.get_nowait())
+signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
+"""
+    done = subprocess.run(
+        [sys.executable, '-c', script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert "('ok', ['daily.csv'])" in done.stdout
+    assert 'Traceback' not in done.stderr
+
+
+def test_parallel_worker_notes_reach_the_parent_emit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def export(*_args: object, **_kwargs: object) -> list[Path]:
+        ui.emit('note: filter applies to Totals')
+        return [Path('daily.csv')]
+
+    class _Context:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(signal, 'signal', lambda *_args: None)
+    monkeypatch.setattr(run, 'load_site', lambda _site: object())
+    monkeypatch.setattr(run, 'sync_playwright', lambda: nullcontext(object()))
+    monkeypatch.setattr(run, 'close_on_stop', nullcontext)
+    monkeypatch.setattr(run, 'launch_browser', lambda *_a, **_k: object())
+    monkeypatch.setattr(run, 'saved_session', lambda *_a, **_k: _Context())
+    monkeypatch.setattr(run, 'export_embed', export)
+    jobs: queue.Queue[Job | None] = queue.Queue()
+    jobs.put(Job('daily', 'W/V', ['Totals'], 'demo'))
+    jobs.put(None)
+    events: queue.Queue[tuple[object, ...]] = queue.Queue()
+    run._serve(cast('Any', jobs), cast('Any', events), threading.Event(), '.')
+    assert capsys.readouterr().out == ''
+
+    class _Done:
+        exitcode = 0
+
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, timeout: float | None = None) -> None:
+            return None
+
+    seen: list[str] = []
+    with ui.capture(seen.append):
+        paths = run._collect_export(
+            cast('Any', _Done()),
+            cast('Any', events),
+            threading.Event(),
+            lambda _done, _sheet: None,
+            run._Running(),
+        )
+
+    assert paths == [Path('daily.csv')]
+    assert seen == ['note: filter applies to Totals']
+
+
+def test_preflight_still_opens_sign_in_when_the_session_probe_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _settings_obj, signed = _rejected_session(monkeypatch, tmp_path)
+
+    assert run._open_site(cast('Any', object()), 'demo') is None
+    assert signed == ['demo']
+
+
+def _same_output_file(root: Path, left: Job, right: Job) -> bool:
+    left_path = root / slug(left.name) / f'{slug(left.sheets[0])}.csv'
+    right_path = root / slug(right.name) / f'{slug(right.sheets[0])}.csv'
+    left_path.parent.mkdir(parents=True, exist_ok=True)
+    left_path.write_text('x', encoding='utf-8')
+    try:
+        return right_path.exists() and left_path.samefile(right_path)
+    finally:
+        left_path.unlink(missing_ok=True)
+
+
+def test_parallel_output_guard_matches_the_volume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def exported(*_args: object, **_kwargs: object) -> set[int]:
+        msg = 'exported'
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(run, '_run_parallel', exported)
+    pairs = [
+        (
+            Job('Daily', 'W/V', ['Totals'], 'one'),
+            Job('daily', 'W/V', ['totals'], 'one'),
+        ),
+        (Job('maß', 'W/V', ['S'], 'one'), Job('mass', 'W/V', ['S'], 'one')),
+    ]
+    for left, right in pairs:
+        same = _same_output_file(tmp_path, left, right)
+        clashes = run.shared_outputs([left, right], tmp_path)
+        if same:
+            assert clashes
+            assert left.name in clashes[0]
+            assert right.name in clashes[0]
+            with pytest.raises(JobError, match='same file'):
+                run.run_jobs([left, right], tmp_path, _CancelReport(), parallel=2)
+        else:
+            assert clashes == []
+
+
+def test_cancel_records_each_parallel_job_from_its_own_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(run, '_CANCEL_JOIN_S', 0.2)
+    started = threading.Event()
+    running_jobs: list[str] = []
+    lock = threading.Lock()
+
+    def fake(
+        job: Job,
+        out_dir: Path,
+        _on_sheet: Callable[[int, str], None],
+        running: run._Running,
+    ) -> list[Path]:
+        with lock:
+            running_jobs.append(job.name)
+            if len(running_jobs) == 2:
+                started.set()
+        while not running.cancel.is_set():
+            time.sleep(0.01)
+        time.sleep(0.6)
+        if job.name == 'kept':
+            return [out_dir / 'kept.csv']
+        msg = 'Cancelled.'
+        raise JobError(msg)
+
+    monkeypatch.setattr(run, '_open_sessions', lambda _jobs: {})
+    _fake_workers(monkeypatch, fake)
+    jobs = [
+        Job('kept', 'W/V', ['Totals'], 'demo'),
+        Job('stopped', 'W/V', ['Totals'], 'demo'),
+        Job('waiting', 'W/V', ['Totals'], 'demo'),
+    ]
+    stop = {'on': False}
+
+    def trip() -> None:
+        assert started.wait(5)
+        stop['on'] = True
+
+    threading.Thread(target=trip, daemon=True).start()
+    report = _CancelReport()
+    with ui.capture(lambda _line: None, lambda: stop['on']):
+        failed = run.run_jobs(jobs, tmp_path, report, parallel=2)
+
+    assert sorted(running_jobs) == ['kept', 'stopped']
+    assert failed == ['stopped', 'waiting']
+    assert sorted(report.rows) == [
+        ('kept', 'ok'),
+        ('stopped', 'Cancelled.'),
+        ('waiting', 'Cancelled.'),
+    ]

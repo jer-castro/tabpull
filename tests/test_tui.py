@@ -1,6 +1,6 @@
 import asyncio
 import os
-import subprocess  # noqa: S404
+import subprocess
 import sys
 import threading
 import time
@@ -905,7 +905,7 @@ def test_setup_blank_fields_keep_the_saved_site(
         assert saved.server == 'https://tableau.example'
         assert saved.site == 'sales'
         assert saved.pat_name == 'mytoken'
-        assert saved.pat_secret == 'old-secret'  # noqa: S105
+        assert saved.pat_secret == 'old-secret'
 
     _drive(jobs_file, steps)
 
@@ -955,7 +955,7 @@ def test_setup_save_anyway_and_a_refused_check_stays_on_the_form(
         await _until(pilot, lambda: isinstance(tui.screen, ConfirmScreen))
         await pilot.press('y')
         await _until(pilot, lambda: isinstance(tui.screen, HomeScreen))
-        assert tableau.load_site('finance').pat_secret == 'secret-value'  # noqa: S105
+        assert tableau.load_site('finance').pat_secret == 'secret-value'
 
     _drive(jobs_file, steps)
 
@@ -1066,7 +1066,7 @@ def test_add_continues_when_setup_sign_in_fails(
         await pilot.press('ctrl+s')
         await _until(pilot, lambda: isinstance(tui.screen, TextForm))
         assert any('sign-in failed' in note for note in notes)
-        assert tableau.load_site('finance').pat_secret == 'secret-value'  # noqa: S105
+        assert tableau.load_site('finance').pat_secret == 'secret-value'
 
     _drive(jobs_file, steps)
 
@@ -1115,7 +1115,7 @@ def test_second_q_returns_while_a_cancelled_search_is_blocked(tmp_path: Path) ->
     env['TABPULL_QUIT_ROOT'] = str(tmp_path)
     env['PYTHONUNBUFFERED'] = '1'
     try:
-        proc = subprocess.run(  # noqa: S603
+        proc = subprocess.run(
             [sys.executable, __file__, '--force-quit-child'],
             env=env,
             timeout=8,
@@ -1182,7 +1182,7 @@ def _fake_settings() -> tableau.Settings:
         pat_name='tabpull',
         name='finance',
         auth_path=Path('auth.json'),
-        pat_secret='secret',  # noqa: S106
+        pat_secret='secret',
     )
 
 

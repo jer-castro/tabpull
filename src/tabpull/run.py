@@ -1,14 +1,23 @@
 import csv
+import multiprocessing
+import os
 import signal
+import tempfile
 import threading
-from collections.abc import Iterator, Sequence
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+import time
+import unicodedata
+from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from functools import partial
+from multiprocessing.process import BaseProcess
+from multiprocessing.queues import Queue as ProcessQueue
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Protocol
 
+from playwright.sync_api import Browser, Playwright, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Playwright, sync_playwright
 from rich import box
 from rich.markup import escape
 from rich.panel import Panel
@@ -25,13 +34,15 @@ from rich.table import Table
 
 from tabpull import ui
 from tabpull.embed import export_embed
-from tabpull.jobs import Job, JobError
+from tabpull.jobs import Job, JobError, slug
 from tabpull.tableau import (
     MissingSettingsError,
     UnknownSiteError,
     browser_session,
     close_on_stop,
+    launch_browser,
     load_site,
+    saved_session,
 )
 
 
@@ -227,7 +238,498 @@ def _export_group(
     return failed
 
 
-def run_jobs(jobs: Sequence[Job], out_dir: Path, report: Report) -> list[str]:
+_POLL_S = 0.1
+_CANCEL_JOIN_S = 5.0
+
+
+class _Stop(Protocol):
+    def set(self) -> None: ...
+
+    def is_set(self) -> bool: ...
+
+
+class _Running:
+    def __init__(self) -> None:
+        self.cancel = threading.Event()
+
+
+def _existing_dir(path: Path) -> Path:
+    current = path
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            return current
+        current = parent
+    return current if current.is_dir() else current.parent
+
+
+def _probe_same(directory: Path, name: str, other: str) -> bool | None:
+    if name == other:
+        return False
+    probe = directory / name
+    try:
+        probe.write_bytes(b'')
+    except OSError:
+        return None
+    try:
+        return (directory / other).exists()
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def _probe_directory(path: Path) -> Path:
+    anchor = _existing_dir(path)
+    temp = Path(tempfile.gettempdir())
+    try:
+        if (
+            temp.is_dir()
+            and anchor.exists()
+            and temp.stat().st_dev == anchor.stat().st_dev
+        ):
+            return temp
+    except OSError:
+        return anchor
+    return anchor
+
+
+def _volume_folds(path: Path) -> tuple[bool, bool]:
+    """Case and Unicode-normalization folding for the volume that holds path."""
+    directory = _probe_directory(path)
+    token = f'.tabpull-{os.getpid()}-{time.monotonic_ns()}'
+    case = _probe_same(directory, f'{token}-A', f'{token}-a')
+    composed = 'é'
+    decomposed = unicodedata.normalize('NFD', composed)
+    norm = _probe_same(directory, f'{token}-{composed}', f'{token}-{decomposed}')
+    ignores_case = os.name == 'nt' if case is None else case
+    return ignores_case, bool(norm)
+
+
+def _output_key(path: Path, *, ignores_case: bool, ignores_norm: bool) -> str:
+    text = os.path.normpath(os.fspath(path))
+    if ignores_norm:
+        text = unicodedata.normalize('NFC', text)
+    if ignores_case:
+        text = text.casefold()
+    return text
+
+
+def shared_outputs(jobs: Sequence[Job], out_dir: Path) -> list[str]:
+    """CSV paths that two jobs in this run would write at the same time."""
+    owners: dict[str, int] = {}
+    clashes: list[str] = []
+    ignores_case, ignores_norm = _volume_folds(out_dir) if jobs else (False, False)
+    for index, job in enumerate(jobs):
+        for sheet in job.sheets:
+            path = out_dir / slug(job.name) / f'{slug(sheet)}.csv'
+            key = _output_key(
+                path, ignores_case=ignores_case, ignores_norm=ignores_norm
+            )
+            previous = owners.get(key)
+            if previous is None:
+                owners[key] = index
+                continue
+            if previous == index:
+                continue
+            other = jobs[previous].name
+            clashes.append(f'{path} ({other}, {job.name})')
+    return clashes
+
+
+def _open_sessions(jobs: Sequence[Job]) -> dict[str, str]:
+    """Open each site's saved session once, before jobs start their own browsers."""
+    errors: dict[str, str] = {}
+    names = list(dict.fromkeys(job.site for job in jobs))
+    if not names:
+        return errors
+    with sync_playwright() as pw, close_on_stop():
+        for site_name in names:
+            if _interrupted():
+                for name in names:
+                    errors.setdefault(name, 'Cancelled.')
+                return errors
+            error = _open_site(pw, site_name)
+            if error is not None:
+                errors[site_name] = error
+    return errors
+
+
+def _open_site(pw: Playwright, site_name: str) -> str | None:
+    try:
+        settings = load_site(site_name)
+    except (UnknownSiteError, MissingSettingsError, ValueError) as e:
+        return str(e)
+    ui.emit(
+        f'  site {settings.name}: {settings.server}, site {settings.site or "(default)"}'
+    )
+    try:
+        context = browser_session(pw, settings)
+    except (SystemExit, PlaywrightError) as e:
+        if _interrupted():
+            return 'Cancelled.'
+        if isinstance(e, PlaywrightError):
+            raise
+        if isinstance(e.code, str):
+            return e.code
+        return 'could not open a browser session'
+    else:
+        context.close()
+        return None
+
+
+def _serve(
+    jobs: ProcessQueue[Job | None],
+    events: ProcessQueue[tuple[object, ...]],
+    stop: _Stop,
+    out_dir: str,
+) -> None:
+    # Runs in its own process for the whole run: its own sync driver and one
+    # browser that exports every job this slot takes, each in a new context.
+    # The parent's stop event is polled from a thread so a blocked download
+    # still dies with the browser instead of running on after Ctrl-C.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    stopped = {'on': False}
+
+    def watch() -> None:
+        while not stopped['on']:
+            if stop.is_set():
+                stopped['on'] = True
+                return
+            time.sleep(_POLL_S)
+
+    watcher = threading.Thread(target=watch, name='tabpull-job-cancel', daemon=True)
+    watcher.start()
+    try:
+        with ui.capture(lambda text: events.put(('note', text)), lambda: stopped['on']):
+            _serve_jobs(jobs, events, Path(out_dir))
+    finally:
+        stopped['on'] = True
+
+
+def _serve_jobs(
+    jobs: ProcessQueue[Job | None],
+    events: ProcessQueue[tuple[object, ...]],
+    out_dir: Path,
+) -> None:
+    with sync_playwright() as pw, close_on_stop():
+        browser: Browser | None = None
+
+        def open_browser() -> Browser:
+            nonlocal browser
+            if browser is None or not browser.is_connected():
+                browser = launch_browser(pw, headless=True)
+            return browser
+
+        while (job := jobs.get()) is not None:
+            events.put(_export_in(open_browser, job, out_dir, events))
+
+
+def _export_in(
+    open_browser: Callable[[], Browser],
+    job: Job,
+    out_dir: Path,
+    events: ProcessQueue[tuple[object, ...]],
+) -> tuple[object, ...]:
+    def on_sheet(done: int, sheet: str) -> None:
+        events.put(('sheet', done, sheet))
+
+    try:
+        settings = load_site(job.site)
+        context = saved_session(open_browser(), settings)
+        try:
+            paths = export_embed(context, settings, job, out_dir, on_sheet=on_sheet)
+        finally:
+            with suppress(PlaywrightError):
+                context.close()
+    except SystemExit as e:
+        message = (
+            e.code if isinstance(e.code, str) else 'could not open a browser session'
+        )
+        return ('err', message)
+    except (
+        JobError,
+        PlaywrightError,
+        OSError,
+        UnicodeError,
+        csv.Error,
+        UnknownSiteError,
+        MissingSettingsError,
+        ValueError,
+    ) as e:
+        return ('err', 'Cancelled.' if ui.stopped() else str(e))
+    return ('ok', [str(path) for path in paths])
+
+
+class _Worker:
+    """One parallel slot's process, kept for every job that slot takes."""
+
+    def __init__(self, out_dir: Path) -> None:
+        ctx = multiprocessing.get_context('spawn')
+        self.jobs: ProcessQueue[Job | None] = ctx.Queue()
+        self.events: ProcessQueue[tuple[object, ...]] = ctx.Queue()
+        self.stop = ctx.Event()
+        self.proc = ctx.Process(
+            target=_serve,
+            args=(self.jobs, self.events, self.stop, str(out_dir)),
+            name='tabpull-worker',
+        )
+        self.proc.start()
+
+    def alive(self) -> bool:
+        return self.proc.is_alive()
+
+    def export(
+        self, job: Job, on_sheet: Callable[[int, str], None], running: _Running
+    ) -> list[Path]:
+        self.jobs.put(job)
+        return _collect_export(self.proc, self.events, self.stop, on_sheet, running)
+
+    def close(self) -> None:
+        with suppress(OSError, ValueError):
+            self.jobs.put(None)
+        self.proc.join(timeout=_CANCEL_JOIN_S)
+        self.stop.set()
+        if self.proc.is_alive():
+            self.proc.terminate()
+            self.proc.join(timeout=_CANCEL_JOIN_S)
+        if self.proc.is_alive():
+            self.proc.kill()
+            self.proc.join(timeout=1)
+        for queue in (self.jobs, self.events):
+            queue.cancel_join_thread()
+            queue.close()
+
+
+def _start_worker(out_dir: Path) -> _Worker:
+    return _Worker(out_dir)
+
+
+class _ExportResult:
+    def __init__(self) -> None:
+        self.paths: list[str] | None = None
+        self.error: str | None = None
+
+    @property
+    def done(self) -> bool:
+        return self.paths is not None or self.error is not None
+
+
+def _note_cancel(
+    running: _Running, stop: _Stop, deadline: float | None
+) -> float | None:
+    if not running.cancel.is_set():
+        return deadline
+    stop.set()
+    if deadline is None:
+        return time.monotonic() + _CANCEL_JOIN_S
+    if time.monotonic() > deadline:
+        msg = 'Cancelled.'
+        raise JobError(msg)
+    return deadline
+
+
+def _poll_event(events: ProcessQueue[tuple[object, ...]]) -> tuple[object, ...] | None:
+    try:
+        return events.get(timeout=_POLL_S)
+    except Empty:
+        return None
+
+
+def _record_event(
+    item: tuple[object, ...],
+    on_sheet: Callable[[int, str], None],
+    result: _ExportResult,
+) -> None:
+    kind = item[0]
+    if kind == 'sheet':
+        _record_sheet(item, on_sheet)
+        return
+    if kind == 'note' and len(item) > 1:
+        ui.emit(str(item[1]))
+        return
+    if kind == 'ok' and len(item) > 1 and isinstance(item[1], list):
+        result.paths = [str(path) for path in item[1]]
+        return
+    if kind == 'err' and len(item) > 1:
+        result.error = str(item[1])
+
+
+def _record_sheet(
+    item: tuple[object, ...], on_sheet: Callable[[int, str], None]
+) -> None:
+    try:
+        _kind, done, sheet = item
+    except ValueError:
+        return
+    if isinstance(done, int) and isinstance(sheet, str):
+        on_sheet(done, sheet)
+
+
+def _collect_export(
+    proc: BaseProcess,
+    events: ProcessQueue[tuple[object, ...]],
+    stop: _Stop,
+    on_sheet: Callable[[int, str], None],
+    running: _Running,
+) -> list[Path]:
+    result = _ExportResult()
+    deadline: float | None = None
+    while not result.done:
+        deadline = _note_cancel(running, stop, deadline)
+        alive = proc.is_alive()
+        item = _poll_event(events)
+        if item is None:
+            if not alive:
+                break
+            continue
+        _record_event(item, on_sheet, result)
+    return _paths_or_error(proc, result, running)
+
+
+def _paths_or_error(
+    proc: BaseProcess, result: _ExportResult, running: _Running
+) -> list[Path]:
+    if result.error is not None:
+        raise JobError(result.error)
+    if result.paths is None:
+        msg = (
+            'Cancelled.'
+            if running.cancel.is_set()
+            else f'export stopped ({proc.exitcode})'
+        )
+        raise JobError(msg)
+    return [Path(path) for path in result.paths]
+
+
+def _run_parallel(
+    jobs: Sequence[Job],
+    out_dir: Path,
+    report: Report,
+    parallel: int,
+) -> list[str]:
+    with _hold_sigint(), report.live():
+        errors = _open_sessions(jobs)
+        failed_ids: set[int] = set()
+        ready: list[Job] = []
+        for job in jobs:
+            error = errors.get(job.site)
+            if error is None:
+                ready.append(job)
+                continue
+            report.fail(job, error)
+            failed_ids.add(id(job))
+        if ready and not _interrupted():
+            failed_ids.update(_export_ready(ready, out_dir, report, parallel))
+        elif ready:
+            failed_ids.update(set(_fail_ids(ready, 'Cancelled.', report)))
+    return [job.name for job in jobs if id(job) in failed_ids]
+
+
+def _fail_ids(jobs: Sequence[Job], message: str, report: Report) -> list[int]:
+    _fail_all(jobs, message, report)
+    return [id(job) for job in jobs]
+
+
+def _export_ready(
+    jobs: Sequence[Job],
+    out_dir: Path,
+    report: Report,
+    parallel: int,
+) -> set[int]:
+    running = _Running()
+    report_lock = threading.Lock()
+    failed: set[int] = set()
+    todo: Queue[Job] = Queue()
+    for job in jobs:
+        todo.put(job)
+
+    def note(text: str) -> None:
+        with report_lock:
+            print(text)
+
+    def fail(job: Job, message: str) -> None:
+        with report_lock:
+            report.fail(job, message)
+            failed.add(id(job))
+
+    def work(worker: _Worker, job: Job) -> None:
+        def on_sheet(done: int, sheet: str) -> None:
+            with report_lock:
+                report.sheet(job, done, sheet)
+
+        try:
+            with ui.capture(note):
+                paths = worker.export(job, on_sheet, running)
+        except (JobError, PlaywrightError, OSError, UnicodeError, csv.Error) as e:
+            fail(job, 'Cancelled.' if running.cancel.is_set() else str(e))
+        else:
+            with report_lock:
+                report.ok(job, paths)
+
+    def slot() -> None:
+        worker: _Worker | None = None
+        try:
+            while not running.cancel.is_set():
+                try:
+                    job = todo.get_nowait()
+                except Empty:
+                    return
+                if worker is not None and not worker.alive():
+                    worker.close()
+                    worker = None
+                if worker is None:
+                    try:
+                        worker = _start_worker(out_dir)
+                    except OSError as e:
+                        fail(job, str(e))
+                        continue
+                work(worker, job)
+        finally:
+            if worker is not None:
+                worker.close()
+
+    slots = min(parallel, len(jobs))
+    with ThreadPoolExecutor(
+        max_workers=slots, thread_name_prefix='tabpull-slot'
+    ) as pool:
+        futures = [pool.submit(slot) for _ in range(slots)]
+        pending = set(futures)
+        while pending:
+            if _interrupted():
+                running.cancel.set()
+                break
+            _done, pending = wait(pending, timeout=_POLL_S, return_when=FIRST_COMPLETED)
+    while True:
+        try:
+            fail(todo.get_nowait(), 'Cancelled.')
+        except Empty:
+            break
+    for future in futures:
+        future.result()
+    return failed
+
+
+def run_jobs(
+    jobs: Sequence[Job],
+    out_dir: Path,
+    report: Report,
+    *,
+    parallel: int = 1,
+) -> list[str]:
+    if parallel < 1:
+        msg = 'parallel must be at least 1'
+        raise JobError(msg)
+    if parallel == 1:
+        return _run_sequential(jobs, out_dir, report)
+    clashes = shared_outputs(jobs, out_dir)
+    if clashes:
+        msg = 'these jobs would write the same file at the same time:\n' + '\n'.join(
+            clashes
+        )
+        raise JobError(msg)
+    return _run_parallel(jobs, out_dir, report, parallel)
+
+
+def _run_sequential(jobs: Sequence[Job], out_dir: Path, report: Report) -> list[str]:
     groups: list[tuple[str, list[Job]]] = []
     for job in jobs:
         if groups and groups[-1][0] == job.site:

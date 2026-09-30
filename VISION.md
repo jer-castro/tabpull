@@ -70,8 +70,9 @@ Exports land in the working directory, where the person running the tool expects
 A flag may point one run at a different jobs file or a different output folder.
 Those locations are documented, and deleting them removes the tool's files from the machine.
 The tool may print the server and the site, and it does not print the token.
-A missing or expired SSO session opens the sign-in window when a person is at a terminal.
-Otherwise it stops and names the command that refreshes the session.
+A missing or expired SSO session opens the sign-in window once, when a person is at a terminal, before that site's jobs start.
+With no terminal, it stops and names the command that refreshes the session.
+A parallel job that finds the session missing after that check fails and names that command.
 The browser is installed Chrome, then installed Edge.
 Playwright Chromium is the fallback when neither of those is installed.
 The tool does not download a browser while Chrome or Edge is already there.
