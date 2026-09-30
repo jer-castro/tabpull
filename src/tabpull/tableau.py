@@ -121,8 +121,12 @@ def site_env_path(name: str) -> Path:
 
 
 def site_auth_path(name: str) -> Path:
-    _move_dir(_legacy_data_dir() / 'auth', config_dir() / 'auth')
-    return config_dir() / 'auth' / f'{check_site_name(name)}.json'
+    source = _legacy_data_dir() / 'auth'
+    dest = config_dir() / 'auth'
+    live = Path.home() / 'Library' / 'Application Support' / _APP / 'auth'
+    if source != live or dest == source:
+        _move_dir(source, dest)
+    return dest / f'{check_site_name(name)}.json'
 
 
 def list_sites() -> list[str]:
