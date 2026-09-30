@@ -124,6 +124,8 @@ def site_auth_path(name: str) -> Path:
     source = _legacy_data_dir() / 'auth'
     dest = config_dir() / 'auth'
     live = Path.home() / 'Library' / 'Application Support' / _APP / 'auth'
+    # On macOS the legacy auth dir is also the default config auth dir, so a
+    # redirected XDG_CONFIG_HOME (tests, one-off runs) must not move it away.
     if source != live:
         _move_dir(source, dest)
     return dest / f'{check_site_name(name)}.json'
