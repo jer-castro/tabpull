@@ -49,7 +49,6 @@ ignore = [
   "module-import-not-at-top-of-file",
   "blanket-noqa",
   "empty-docstring",
-  "implicit-namespace-package",
 ]
 extend-select = [
   "E",

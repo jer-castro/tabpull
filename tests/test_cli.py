@@ -1,5 +1,6 @@
 import importlib.metadata
 import io
+import queue
 import re
 import runpy
 import shlex
@@ -2182,6 +2183,47 @@ signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
     assert done.returncode == 0, done.stderr
     assert "('ok', ['daily.csv'])" in done.stdout
     assert 'Traceback' not in done.stderr
+
+
+def test_parallel_worker_notes_reach_the_parent_emit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def export(*_args: object, **_kwargs: object) -> list[Path]:
+        ui.emit('note: filter applies to Totals')
+        return [Path('daily.csv')]
+
+    monkeypatch.setattr(signal, 'signal', lambda *_args: None)
+    monkeypatch.setattr(run, 'load_site', lambda _site: object())
+    monkeypatch.setattr(run, 'sync_playwright', lambda: nullcontext(object()))
+    monkeypatch.setattr(run, 'close_on_stop', nullcontext)
+    monkeypatch.setattr(run, 'browser_session', lambda *_a, **_k: object())
+    monkeypatch.setattr(run, 'export_embed', export)
+    events: queue.Queue[tuple[object, ...]] = queue.Queue()
+    job = Job('daily', 'W/V', ['Totals'], 'demo')
+    run._isolated_export(job, '.', cast('Any', events), threading.Event())
+    assert capsys.readouterr().out == ''
+
+    class _Done:
+        exitcode = 0
+
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, timeout: float | None = None) -> None:
+            return None
+
+    seen: list[str] = []
+    with ui.capture(seen.append):
+        paths = run._collect_export(
+            cast('Any', _Done()),
+            cast('Any', events),
+            threading.Event(),
+            lambda _done, _sheet: None,
+            run._Running(),
+        )
+
+    assert paths == [Path('daily.csv')]
+    assert seen == ['note: filter applies to Totals']
 
 
 def test_preflight_still_opens_sign_in_when_the_session_probe_fails(

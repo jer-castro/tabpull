@@ -396,7 +396,7 @@ def _isolated_export(
     watcher = threading.Thread(target=watch, name='tabpull-job-cancel', daemon=True)
     watcher.start()
     try:
-        with ui.capture(print, lambda: stopped['on']):
+        with ui.capture(lambda text: events.put(('note', text)), lambda: stopped['on']):
             paths = _export_own_browser(job, Path(out_dir), events)
     except SystemExit as e:
         message = (
@@ -505,6 +505,9 @@ def _record_event(
     if kind == 'sheet':
         _record_sheet(item, on_sheet)
         return
+    if kind == 'note' and len(item) > 1:
+        ui.emit(str(item[1]))
+        return
     if kind == 'ok' and len(item) > 1 and isinstance(item[1], list):
         result.paths = [str(path) for path in item[1]]
         return
@@ -599,13 +602,18 @@ def _export_ready(
     report_lock = threading.Lock()
     failed: set[int] = set()
 
+    def note(text: str) -> None:
+        with report_lock:
+            print(text)
+
     def work(job: Job) -> None:
         def on_sheet(done: int, sheet: str) -> None:
             with report_lock:
                 report.sheet(job, done, sheet)
 
         try:
-            paths = _export_job_isolated(job, out_dir, on_sheet, running)
+            with ui.capture(note):
+                paths = _export_job_isolated(job, out_dir, on_sheet, running)
         except (JobError, PlaywrightError, OSError, UnicodeError, csv.Error) as e:
             message = 'Cancelled.' if running.cancel.is_set() else str(e)
             with report_lock:
