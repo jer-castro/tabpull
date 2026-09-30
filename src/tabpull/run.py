@@ -534,9 +534,10 @@ def _collect_export(
     deadline: float | None = None
     while not result.done:
         deadline = _note_cancel(running, stop, deadline)
+        alive = proc.is_alive()
         item = _poll_event(events)
         if item is None:
-            if not proc.is_alive():
+            if not alive:
                 break
             continue
         _record_event(item, on_sheet, result)
