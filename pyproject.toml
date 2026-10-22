@@ -36,7 +36,7 @@ package = true
 
 python-preference = "only-managed"
 exclude-newer = "7 days"
-constraint-dependencies = ["litellm!=1.82.7,!=1.82.8"]
+constraint-dependencies = ["litellm!=1.82.7,!=1.82.8,!=1.107.0"]
 add-bounds = "exact"
 
 [dependency-groups]
