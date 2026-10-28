@@ -1,14 +1,17 @@
 <p align="center">
-  <img src="assets/hero.svg" alt="tabpull" width="100%" />
+  <img src="https://raw.githubusercontent.com/jer-castro/tabpull/main/assets/hero.svg" alt="tabpull" width="100%" />
 </p>
 
 tabpull exports named worksheets from a published Tableau dashboard to UTF-8 CSV.
 
 ```sh
-uv tool install git+https://github.com/jer-castro/tabpull
+pip install tabpull
+uv tool install tabpull
 ```
 
-That installs the `tabpull` command. Bare `tabpull` at a terminal opens an interactive screen; add, setup, login, and run stay on that screen. `setup`, `add`, `remove`, `run`, and `login` are also subcommands and work the same with or without it. Pin a tag with `@vX.Y.Z` on the URL. Upgrade with `uv tool upgrade tabpull`.
+That installs the `tabpull` command. Bare `tabpull` at a terminal opens an interactive screen. Add, setup, login, and run stay on that screen. `setup`, `add`, `remove`, `run`, and `login` are also subcommands and work the same with or without it. Pin a release with `tabpull==X.Y.Z` or `uv tool install tabpull==X.Y.Z`. Upgrade a uv tool with `uv tool upgrade tabpull`. A commit that is not published yet still installs with `uv tool install git+https://github.com/jer-castro/tabpull`. Add `@vX.Y.Z` on that URL to pin a tag.
+
+tabpull launches installed Chrome, then Edge. When neither is installed, install Chromium after the package. After `pip install tabpull`, run `playwright install chromium` in that environment. After `uv tool install tabpull`, the `playwright` command is not on `PATH`. Run `uvx playwright==<version> install chromium` with the version tabpull prints when Chrome and Edge are missing. That command uses the same browser revision and the default Playwright cache as the installed package.
 
 ## Why Embedding API
 
