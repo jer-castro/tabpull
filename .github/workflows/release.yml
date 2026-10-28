@@ -1,8 +1,8 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: ['main']
   workflow_dispatch:
 
 permissions:
@@ -13,31 +13,57 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      target: ${{ (github.event_name == 'workflow_dispatch' && 'testpypi') || (steps.release-please.outputs.release_created == 'true' && 'pypi') || '' }}
+      tag_name: ${{ steps.release-please.outputs.tag_name }}
+    steps:
+      # A release-type input makes this action ignore the config file and the manifest.
+      - id: release-please
+        if: github.event_name == 'push'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+
   build:
+    needs: release
+    if: needs.release.outputs.target != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
       actions: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ needs.release.outputs.target == 'pypi' && needs.release.outputs.tag_name || github.sha }}
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.12.19"
           python-version: "3.12"
           enable-cache: false
 
-      - name: Require the release tag to match the package version
-        if: github.event_name == 'release'
+      - name: Match the version to the target index
+        env:
+          TARGET: ${{ needs.release.outputs.target }}
+          TAG_NAME: ${{ needs.release.outputs.tag_name }}
         run: |
           version="$(uv run --no-project python -c 'import tomllib; from pathlib import Path; print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])')"
-          expected="v${version}"
-          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
-            printf 'Tag %s does not match pyproject version %s.\n' "$GITHUB_REF_NAME" "$expected"
-            exit 1
-          fi
+          case "$TARGET" in
+            pypi)
+              if [ "$TAG_NAME" != "v${version}" ]; then
+                printf 'Tag %s does not match pyproject version v%s.\n' "$TAG_NAME" "$version"
+                exit 1
+              fi
+              ;;
+            testpypi)
+              uv version --frozen "${version}.dev${GITHUB_RUN_NUMBER}"
+              ;;
+          esac
 
       - name: Build
         run: uv build
@@ -45,33 +71,33 @@ jobs:
       - name: Check distributions
         run: uvx twine check --strict dist/*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: python-package-distributions
           path: dist/
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [release, build]
     runs-on: ubuntu-latest
     environment:
-      name: ${{ github.event_name == 'workflow_dispatch' && 'testpypi' || 'pypi' }}
-      url: ${{ github.event_name == 'workflow_dispatch' && 'https://test.pypi.org/p/tabpull' || 'https://pypi.org/p/tabpull' }}
+      name: ${{ needs.release.outputs.target }}
+      url: https://${{ needs.release.outputs.target == 'testpypi' && 'test.' || '' }}pypi.org/p/tabpull
     permissions:
       id-token: write
       actions: read
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: python-package-distributions
           path: dist/
 
       - name: Publish to PyPI
-        if: github.event_name == 'release'
-        uses: pypa/gh-action-pypi-publish@release/v1
+        if: needs.release.outputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
       - name: Publish to TestPyPI
-        if: github.event_name == 'workflow_dispatch'
-        uses: pypa/gh-action-pypi-publish@release/v1
+        if: needs.release.outputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           repository-url: https://test.pypi.org/legacy/

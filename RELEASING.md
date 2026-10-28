@@ -1,35 +1,68 @@
 # Releasing
 
-## Set up the publisher once
+release-please reads Conventional Commits on `main` and opens one release pull request. You merge that pull request. The same workflow tags `vX.Y.Z`, builds that tag, and uploads to PyPI.
 
-`tabpull` is not on PyPI yet. Add a pending trusted publisher. Do not create an API token.
+GitHub does not start a workflow from a release created with `GITHUB_TOKEN`. Release-please and the publish job therefore run in `.github/workflows/release.yml`. The publish job runs only when this run's `release_created` output is true. A personal access token is not used. A release you publish by hand does not upload.
 
-On PyPI, enter these fields.
+## Set the publisher up once
 
-- PyPI project name is `tabpull`.
+Keep the PyPI trusted publisher as it is.
+
+- Project name is `tabpull`.
 - Owner is `jer-castro`.
-- Repository name is `tabpull`.
-- Workflow name is `release.yml`.
+- Repository is `tabpull`.
+- Workflow filename is `release.yml`.
 - Environment name is `pypi`.
 
-The workflow file is `.github/workflows/release.yml`. PyPI matches the filename `release.yml`.
+Do not rename the workflow file. PyPI matches the filename `release.yml`.
 
-Create a GitHub environment named `pypi`. The publish job uses that name. PyPI matches it on upload.
+The publish job uses the GitHub environment `pypi`. The trusted publisher is registered to that environment name. Keep the name `pypi`. The `pypi` environment allows deployments from branch `main` and from tags matching `v*`.
 
-TestPyPI is optional. Add a pending trusted publisher there with the same owner, repository, and workflow name. Set the environment name to `testpypi`. Create a GitHub environment named `testpypi`.
+For TestPyPI, add a trusted publisher with the same owner, repository, and workflow filename. Set the environment name to `testpypi`. The manual run uses that environment.
 
-## Publish a release
+Allow GitHub Actions to create and approve pull requests. The setting is under Settings, Actions, General. release-please cannot open its pull request without it.
 
-1. Bump `version` in `pyproject.toml`.
-2. Add a matching entry to `CHANGELOG.md`.
-3. Merge that commit to `main`.
-4. Tag that commit `vX.Y.Z`. The tag is the version with a leading `v`.
-5. Publish a GitHub release for that tag.
+## Write commits release-please reads
 
-Publishing the release runs the Release workflow. The workflow builds the sdist and the wheel, runs `twine check --strict`, and uploads them to PyPI. A tag push alone does not publish.
+Use a Conventional Commit as the squash title.
 
-The tag must match `version`. A release tagged `v0.2.0` fails while `pyproject.toml` still says `0.1.0`.
+- `feat` opens a minor release.
+- `fix`, `perf`, `deps`, `revert`, and `docs` open a patch release.
+- A breaking change before 1.0.0 opens the next minor release. Put `Release-As: 1.0.0` in the commit body when you want 1.0.0.
+- `build`, `ci`, `chore`, `refactor`, `style`, and `test` do not open a release on their own.
 
-## Try the same commit on TestPyPI
+Squash-merge, and keep that squash title conventional.
 
-Run the Release workflow manually on the commit you want to try. That run uses the `testpypi` environment and uploads to `https://test.pypi.org/legacy/`. It does not upload to PyPI. Publish the GitHub release only after that try looks right.
+## Merge the release pull request
+
+release-please keeps one pull request open. The title looks like `chore(main): release 0.2.0`.
+
+That pull request updates `version` in `pyproject.toml`, the `tabpull` version line in `uv.lock`, `CHANGELOG.md`, and `.release-please-manifest.json`. The existing `## 0.1.0` entry stays under the new section.
+
+`version` in `pyproject.toml` is the only version source. release-please copies it into `uv.lock`. `tabpull --version` reads installed metadata, which the build fills from `pyproject.toml`.
+
+Merge the pull request. Do not edit the version or the changelog by hand.
+
+GitHub does not run checks on a pull request opened with `GITHUB_TOKEN`. To build that branch first, run the TestPyPI command below with ref `release-please--branches--main`. CI runs on `main` after the merge.
+
+## Publish to PyPI
+
+The merge runs Release on `main`. release-please creates tag `vX.Y.Z` and the GitHub Release in that run. The workflow builds that tag and uploads the sdist and the wheel to PyPI.
+
+If the upload fails, re-run the failed jobs on that same run. Do not start a manual run to retry PyPI. A manual run uploads only to TestPyPI.
+
+## Try a commit on TestPyPI
+
+The TestPyPI trusted publisher has to exist before this uploads. This repository change does not perform that upload.
+
+```bash
+gh workflow run release.yml --ref <branch>
+```
+
+The run uses the `testpypi` environment and `https://test.pypi.org/legacy/`. It does not request `pypi`. The `testpypi` environment has no branch limit, so a dry run from a pull request branch is allowed.
+
+The workflow appends `.dev` and the GitHub run number to the version, and only on this manual run. Each new run uploads a new version, so a version already on TestPyPI does not collide. A re-run of the same workflow run reuses the number and can collide. Start a new run instead.
+
+```bash
+pip install --pre --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ 'tabpull==X.Y.Z.devN'
+```
