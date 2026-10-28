@@ -6,6 +6,19 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Jeremy Castro", email = "160854558+jer-castro@users.noreply.github.com" }]
+keywords = ["tableau", "crosstab", "csv", "cli"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Utilities",
+]
 requires-python = ">=3.12"
 dependencies = [
   "playwright==1.63.0",
@@ -19,6 +32,7 @@ dependencies = [
 Homepage = "https://github.com/jer-castro/tabpull"
 Repository = "https://github.com/jer-castro/tabpull"
 Issues = "https://github.com/jer-castro/tabpull/issues"
+Changelog = "https://github.com/jer-castro/tabpull/blob/main/CHANGELOG.md"
 
 [project.scripts]
 tabpull = "tabpull.cli:main"
@@ -29,6 +43,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["tabpull*"]
 
 [tool.uv]
 
